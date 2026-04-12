@@ -97,14 +97,14 @@ async def scan_repo(payload: dict):
         }
 
         repo_data[repo] = {
-            "issues": deduped,
+            "issues": deduped,              # 🔹 filtered (UI)
+            "all_issues": results,          # 🔥 FULL issues (IMPORTANT FIX)
             "history": repo_data.get(repo, {}).get("history", []) + [snapshot],
             "path": repo_path
         }
-
         print(f"[SCAN COMPLETE] {len(deduped)} issues")
 
-        return {"issues": deduped, "language": language}
+        return {"issues": deduped, "total_issues": len(results), "language": language}
 
     except Exception as e:
         print("[ERROR]", e)
@@ -131,7 +131,8 @@ async def preview_fix(payload: dict):
         return {"error": "Run scan first"}
 
     repo_path = repo_info["path"]
-    issues = repo_info["issues"]
+    issues = repo_info.get("all_issues", repo_info["issues"])
+    print(f"[PREVIEW] Using issues: {len(issues)}")
 
     diffs = []
 
