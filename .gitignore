@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+.cache/
+.pytest_cache/
+.mypy_cache/
+dashboard/node_modules/
+devsecops/
+repos/
+reports/
+logs/
+cache.json
+test_api.db
+env.txt

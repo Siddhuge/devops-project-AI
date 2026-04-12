@@ -1,0 +1,18 @@
+ai:
+  provider: azure
+  azure:
+    api_version: 2024-12-01-preview
+    deployment_name: gpt-4.1
+
+plugins:
+  trivy: true
+  sonar: false
+  zap: false
+
+execution:
+  max_workers: 3
+  timeout: 120
+
+cache:
+  enabled: true
+  ttl_seconds: 86400
