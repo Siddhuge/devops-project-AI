@@ -1,24 +1,70 @@
 def deduplicate(issues):
-    seen = set()
+    seen = {}
     unique = []
 
     print(f"[DEDUP] Incoming issues: {len(issues)}")
 
     for issue in issues:
-        cve = issue.get("id", "unknown")
-        pkg = issue.get("package", "unknown")
-        severity = issue.get("severity", "UNKNOWN")
-        target = issue.get("target", "global")
-        source = issue.get("source", "unknown")
 
         # =========================
-        # 🔥 STRONG UNIQUE KEY
+        # 🔥 NORMALIZE FIELDS
         # =========================
-        key = f"{cve}:{pkg}:{severity}:{target}:{source}"
+        cve = (issue.get("id") or "unknown").upper().strip()
+        pkg = (issue.get("package") or "unknown").lower().strip()
+        severity = (issue.get("severity") or "UNKNOWN").upper().strip()
+        target = (issue.get("target") or "global").strip()
+        source = (issue.get("source") or "unknown").strip()
 
-        if key not in seen:
-            seen.add(key)
-            unique.append(issue)
+        installed = (issue.get("installed_version") or "").strip()
+
+        # 🔥 Normalize fixed versions
+        fixed_versions = issue.get("fixed_versions") or issue.get("fix") or []
+
+        if isinstance(fixed_versions, str):
+            fixed_versions = [v.strip() for v in fixed_versions.split(",") if v.strip()]
+
+        fixed_versions = tuple(sorted(fixed_versions))
+
+        # =========================
+        # 🔥 STRONG UNIQUE KEY (IMPROVED)
+        # =========================
+        key = (
+            cve,
+            pkg,
+            installed,
+            target,
+            source
+        )
+
+        # =========================
+        # 🔥 KEEP BEST ISSUE (SMART MERGE)
+        # =========================
+        if key in seen:
+            existing = seen[key]
+
+            # Prefer higher severity
+            severity_rank = {
+                "CRITICAL": 4,
+                "HIGH": 3,
+                "MEDIUM": 2,
+                "LOW": 1
+            }
+
+            existing_rank = severity_rank.get(existing.get("severity"), 0)
+            current_rank = severity_rank.get(severity, 0)
+
+            if current_rank > existing_rank:
+                seen[key] = issue
+
+            # Prefer higher confidence
+            elif issue.get("confidence", 0) > existing.get("confidence", 0):
+                seen[key] = issue
+
+            continue
+
+        seen[key] = issue
+
+    unique = list(seen.values())
 
     print(f"[DEDUP] After dedup: {len(unique)}")
 

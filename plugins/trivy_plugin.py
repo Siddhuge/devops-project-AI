@@ -23,25 +23,25 @@ def extract_base_image(dockerfile):
         with open(dockerfile) as f:
             for line in f:
                 line = line.strip()
-                if line.startswith("FROM"):
+                if line.upper().startswith("FROM"):
                     parts = line.split()
                     if len(parts) >= 2:
                         return parts[1].strip()
-    except:
-        pass
+    except Exception as e:
+        print(f"[ERROR] Failed reading Dockerfile: {e}")
     return None
 
 
 # =========================
-# 🔥 Validate Docker Image
+# 🔥 Validate Docker Image (IMPROVED)
 # =========================
 def validate_image(image):
     try:
         result = subprocess.run(
-            ["docker", "pull", image],
+            ["docker", "manifest", "inspect", image],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=20
+            timeout=15
         )
         return result.returncode == 0
     except:
@@ -53,22 +53,25 @@ def validate_image(image):
 # =========================
 def get_valid_image(base_image):
 
+    if not base_image:
+        return None
+
     if ":" in base_image:
         name, tag = base_image.split(":", 1)
     else:
         name, tag = base_image, "latest"
 
-    # 🔥 Improved dynamic candidates (NOT language-specific)
     candidates = [
         base_image,
         f"{name}:{tag}-slim",
         f"{name}:{tag}-alpine",
-        f"{name}:{tag}-jdk",     # ✅ NEW
-        f"{name}:{tag}-jre",     # ✅ NEW
+        f"{name}:{tag}-jdk",
+        f"{name}:{tag}-jre",
         f"{name}:latest",
         name
     ]
 
+    # remove duplicates safely
     candidates = list(dict.fromkeys(candidates))
 
     print(f"[DEBUG] Image candidates: {candidates}")
@@ -84,7 +87,7 @@ def get_valid_image(base_image):
 
 
 # =========================
-# 🔥 Deduplicate issues (SAFE)
+# 🔥 Deduplicate issues (FIXED STRONGER)
 # =========================
 def deduplicate_issues(issues):
 
@@ -95,7 +98,8 @@ def deduplicate_issues(issues):
         key = (
             i.get("id"),
             i.get("package"),
-            i.get("target")
+            i.get("target"),
+            i.get("source")   # 🔥 FIX: avoid collapsing FS + image issues
         )
 
         if key in seen:
@@ -105,6 +109,19 @@ def deduplicate_issues(issues):
         unique.append(i)
 
     return unique
+
+
+# =========================
+# 🔥 Normalize Fix Versions (NEW)
+# =========================
+def normalize_fix_versions(fix):
+    if not fix:
+        return []
+
+    if isinstance(fix, list):
+        return fix
+
+    return [v.strip() for v in str(fix).split(",") if v.strip()]
 
 
 # =========================
@@ -123,11 +140,16 @@ def enrich_issue(issue):
 
     issue["priority"] = priority_map.get(severity, 0)
 
-    # 🔥 Confidence logic (simple but effective)
-    if issue.get("fix"):
-        issue["confidence"] = 90
+    # 🔥 Normalize fix versions (IMPORTANT for patcher)
+    issue["fixed_versions"] = normalize_fix_versions(issue.get("fix"))
+
+    # 🔥 Confidence logic improved
+    if issue["fixed_versions"]:
+        issue["confidence"] = 95
+    elif issue.get("fix"):
+        issue["confidence"] = 80
     else:
-        issue["confidence"] = 60
+        issue["confidence"] = 50
 
     return issue
 
@@ -159,6 +181,7 @@ async def run(repo_path):
     try:
         data = json.loads(fs.stdout or "{}")
     except:
+        print("[ERROR] Failed parsing FS scan output")
         data = {}
 
     for r in data.get("Results", []):
@@ -168,6 +191,7 @@ async def run(repo_path):
                 "severity": v.get("Severity"),
                 "package": v.get("PkgName"),
                 "fix": v.get("FixedVersion"),
+                "installed_version": v.get("InstalledVersion"),
                 "target": r.get("Target"),
                 "source": "fs"
             }
@@ -223,6 +247,7 @@ async def run(repo_path):
         try:
             img_data = json.loads(img.stdout or "{}")
         except:
+            print("[ERROR] Failed parsing image scan")
             img_data = {}
 
         for r in img_data.get("Results", []):
@@ -233,6 +258,7 @@ async def run(repo_path):
                     "severity": v.get("Severity"),
                     "package": v.get("PkgName"),
                     "fix": v.get("FixedVersion"),
+                    "installed_version": v.get("InstalledVersion"),
                     "target": dockerfile,
                     "source": f"image:{valid_image}"
                 }
@@ -244,7 +270,7 @@ async def run(repo_path):
     # =========================
     issues = deduplicate_issues(issues)
 
-    # 🔥 Sort by priority (enterprise UX)
+    # 🔥 Sort by priority
     issues.sort(key=lambda x: x.get("priority", 0), reverse=True)
 
     print(f"[FINAL] Total findings: {len(issues)}")

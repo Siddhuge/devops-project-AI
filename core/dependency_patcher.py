@@ -2,12 +2,15 @@ import json
 import re
 import xml.etree.ElementTree as ET
 
+# 🔥 NEW IMPORTS (INTEGRATION)
+from core.risk_engine import calculate_risk, calculate_confidence
+
 
 # =========================
 # 🔥 VERSION PARSER (SAFE)
 # =========================
 def normalize_version(v):
-    return re.sub(r"[^\d\.]", "", v)
+    return re.sub(r"[^\d\.]", "", v or "")
 
 
 def version_tuple(v):
@@ -17,8 +20,15 @@ def version_tuple(v):
         return (0,)
 
 
+def get_major(v):
+    try:
+        return version_tuple(v)[0]
+    except:
+        return None
+
+
 # =========================
-# 🔥 PICK SAFEST VERSION (SMART)
+# 🔥 SMART VERSION PICKER (CVE-AWARE)
 # =========================
 def pick_safe_version(current, fixes):
 
@@ -33,33 +43,30 @@ def pick_safe_version(current, fixes):
     if not fixes:
         return None
 
-    try:
-        current_major = version_tuple(current)[0]
-    except:
-        current_major = None
+    current_major = get_major(current)
 
     safe_versions = []
+    risky_versions = []
 
     for f in fixes:
-        try:
-            f_major = version_tuple(f)[0]
-        except:
-            continue
+        f_major = get_major(f)
 
-        # Prefer same major version (avoid breaking)
         if current_major is not None and f_major == current_major:
             safe_versions.append(f)
+        else:
+            risky_versions.append(f)
 
-    # If same-major available → pick smallest safe upgrade
     if safe_versions:
-        return sorted(safe_versions, key=version_tuple)[0]
+        return sorted(safe_versions, key=version_tuple)[-1]
 
-    # fallback → pick lowest version overall
-    return sorted(fixes, key=version_tuple)[0]
+    if risky_versions:
+        return sorted(risky_versions, key=version_tuple)[-1]
+
+    return None
 
 
 # =========================
-# 🔥 BUILD FIX MAP (SMART)
+# 🔥 BUILD FIX MAP (IMPROVED)
 # =========================
 def build_fix_map(issues):
 
@@ -67,34 +74,49 @@ def build_fix_map(issues):
 
     for i in issues:
         pkg = i.get("package")
-        fix = i.get("fix")
+        fixes = i.get("fixed_versions") or i.get("fix")
 
-        if not pkg or not fix:
+        if not pkg or not fixes:
             continue
 
         pkg = pkg.lower()
 
+        if isinstance(fixes, str):
+            fixes = [f.strip() for f in fixes.split(",")]
+
         if pkg not in fix_map:
             fix_map[pkg] = []
 
-        # store all possible fixes
-        if isinstance(fix, str):
-            fix_map[pkg].extend([f.strip() for f in fix.split(",")])
+        fix_map[pkg].extend(fixes)
 
-        # short name support
         if ":" in pkg:
             short = pkg.split(":")[-1]
-            if short not in fix_map:
-                fix_map[short] = []
-            fix_map[short].extend(fix_map[pkg])
+            fix_map.setdefault(short, []).extend(fixes)
 
     return fix_map
 
 
 # =========================
+# 🔥 AI REASONING (UPDATED WITH RISK ENGINE)
+# =========================
+def generate_reason(pkg, old, new, issue=None):
+
+    if not old or not new:
+        return ""
+
+    risk = calculate_risk(old, new)
+
+    confidence = 0
+    if issue:
+        confidence = calculate_confidence(issue)
+
+    return f"{pkg}: {old} → {new} | Risk: {risk} | Confidence: {confidence} | CVE Fix Applied"
+
+
+# =========================
 # 🐍 PYTHON PATCHER
 # =========================
-def patch_requirements(content, fix_map):
+def patch_requirements(content, fix_map, issues, patch_log):
 
     lines = content.split("\n")
     updated = []
@@ -121,6 +143,11 @@ def patch_requirements(content, fix_map):
                 continue
 
             print(f"[PATCH][PY] {pkg} {current_version} → {new_version}")
+
+            issue = next((i for i in issues if i.get("package", "").lower() == pkg), None)
+
+            patch_log.append(generate_reason(pkg, current_version, new_version, issue))
+
             updated.append(f"{pkg}=={new_version}")
         else:
             updated.append(line)
@@ -131,7 +158,7 @@ def patch_requirements(content, fix_map):
 # =========================
 # 🟢 NODE PATCHER
 # =========================
-def patch_package_json(content, fix_map):
+def patch_package_json(content, fix_map, issues, patch_log):
 
     try:
         data = json.loads(content)
@@ -158,6 +185,11 @@ def patch_package_json(content, fix_map):
                     continue
 
                 print(f"[PATCH][NODE] {pkg} → {new_version}")
+
+                issue = next((i for i in issues if i.get("package", "").lower() == key), None)
+
+                patch_log.append(generate_reason(pkg, current_version, new_version, issue))
+
                 data[section][pkg] = new_version
                 updated_flag = True
 
@@ -170,7 +202,7 @@ def patch_package_json(content, fix_map):
 # =========================
 # ☕ MAVEN PATCHER
 # =========================
-def patch_pom_xml(content, fix_map):
+def patch_pom_xml(content, fix_map, issues, patch_log):
 
     try:
         root = ET.fromstring(content)
@@ -204,6 +236,10 @@ def patch_pom_xml(content, fix_map):
 
         print(f"[PATCH][MAVEN] {full_pkg} {current_version} → {new_version}")
 
+        issue = next((i for i in issues if i.get("package", "").lower() in [full_pkg, short_pkg]), None)
+
+        patch_log.append(generate_reason(full_pkg, current_version, new_version, issue))
+
         version.text = new_version
         updated_flag = True
 
@@ -214,7 +250,7 @@ def patch_pom_xml(content, fix_map):
 
 
 # =========================
-# 🚀 MAIN ENTRY
+# 🚀 MAIN ENTRY (UPDATED)
 # =========================
 def patch_dependency_file(file_path, issues):
 
@@ -224,15 +260,16 @@ def patch_dependency_file(file_path, issues):
         content = f.read()
 
     updated = content
+    patch_log = []
 
     if file_path.endswith("requirements.txt"):
-        updated = patch_requirements(content, fix_map)
+        updated = patch_requirements(content, fix_map, issues, patch_log)
 
     elif file_path.endswith("package.json"):
-        updated = patch_package_json(content, fix_map)
+        updated = patch_package_json(content, fix_map, issues, patch_log)
 
     elif file_path.endswith("pom.xml"):
-        updated = patch_pom_xml(content, fix_map)
+        updated = patch_pom_xml(content, fix_map, issues, patch_log)
 
     # =========================
     # 🛑 IDEMPOTENCY CHECK

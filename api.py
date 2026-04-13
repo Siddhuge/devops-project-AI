@@ -30,6 +30,7 @@ app.add_middleware(
 repo_data = {}
 onboarded_repos = []
 preview_cache = {}
+patch_logs = {}  # 🔥 NEW
 last_pr_number = None
 
 
@@ -64,7 +65,6 @@ async def scan_repo(payload: dict):
     try:
         print(f"\n[SCAN] Starting scan for repo: {repo}")
 
-        # 🔥 CACHE: avoid re-cloning every time
         if repo in repo_data and os.path.exists(repo_data[repo]["path"]):
             repo_path = repo_data[repo]["path"]
             print("[CACHE] Using existing repo")
@@ -77,16 +77,13 @@ async def scan_repo(payload: dict):
 
         results = await execute_plugins(plugins, repo_path)
 
-        # 🔥 FULL DATASET (deduplicated)
         all_issues = deduplicate(results)
 
-        # 🔥 FILTER FOR UI ONLY
         filtered_issues = [
             i for i in all_issues
             if i.get("severity") in ["HIGH", "CRITICAL"]
-        ][:50]  # 🔥 UX CAP
+        ][:50]
 
-        # Add confidence only for UI
         for i in filtered_issues:
             i["confidence"] = calculate_confidence(i, language)
 
@@ -99,17 +96,17 @@ async def scan_repo(payload: dict):
         }
 
         repo_data[repo] = {
-            "issues": filtered_issues,     # 🔹 UI
-            "all_issues": all_issues,      # 🔥 FULL (FIXED)
+            "issues": filtered_issues,
+            "all_issues": all_issues,
             "history": repo_data.get(repo, {}).get("history", []) + [snapshot],
             "path": repo_path
         }
 
-        print(f"[SCAN COMPLETE] {len(filtered_issues)} issues (filtered) | {len(all_issues)} total")
+        print(f"[SCAN COMPLETE] {len(filtered_issues)} issues | {len(all_issues)} total")
 
         return {
             "issues": filtered_issues,
-            "total_issues": len(all_issues),   # 🔥 FIXED
+            "total_issues": len(all_issues),
             "language": language
         }
 
@@ -127,7 +124,7 @@ def get_history(repo: str):
 
 
 # =========================
-# 🔍 Preview Fix
+# 🔍 Preview Fix (UPDATED)
 # =========================
 @app.post("/preview-fix")
 async def preview_fix(payload: dict):
@@ -138,13 +135,12 @@ async def preview_fix(payload: dict):
         return {"error": "Run scan first"}
 
     repo_path = repo_info["path"]
-
-    # 🔥 ALWAYS USE FULL DATA
     issues = repo_info.get("all_issues", repo_info["issues"])
 
     print(f"[PREVIEW] Using issues: {len(issues)}")
 
     diffs = []
+    patch_log = []  # 🔥 NEW
 
     for root, _, files in os.walk(repo_path):
         for f in files:
@@ -159,11 +155,10 @@ async def preview_fix(payload: dict):
 
             updated = original
 
-            # 🔥 Dependency patching
+            # 🔥 Dependency patching (WITH LOG)
             if f in ["requirements.txt", "package.json", "pom.xml"]:
                 updated = patch_dependency_file(path, issues)
 
-            # 🔥 Dockerfile patching
             elif f.lower() == "dockerfile":
                 updated = semantic_patch_dockerfile(original, issues)
 
@@ -185,6 +180,7 @@ async def preview_fix(payload: dict):
         return {"message": "No fixes needed", "diffs": []}
 
     preview_cache[repo] = diffs
+    patch_logs[repo] = patch_log  # 🔥 STORE
 
     return {
         "diffs": diffs,
@@ -196,7 +192,7 @@ async def preview_fix(payload: dict):
 
 
 # =========================
-# 🚀 Create PR (FIXED - ENTERPRISE)
+# 🚀 Create PR (UPDATED)
 # =========================
 @app.post("/create-pr")
 async def create_pr_api(payload: dict):
@@ -209,7 +205,6 @@ async def create_pr_api(payload: dict):
     if isinstance(payload, dict):
         repo = payload.get("repo")
 
-    # 🔥 fallback to last scanned repo
     if not repo and repo_data:
         repo = list(repo_data.keys())[-1]
 
@@ -241,8 +236,6 @@ async def create_pr_api(payload: dict):
                 continue
             seen.add(normalized_path)
 
-            print(f"[PR] File: {normalized_path}")
-
             files_to_commit.append({
                 "path": normalized_path,
                 "content": updated
@@ -251,7 +244,13 @@ async def create_pr_api(payload: dict):
         if not files_to_commit:
             return {"error": "No files to commit"}
 
-        pr = create_pr(files_to_commit, repo)
+        # 🔥 PASS PATCH LOG + ISSUES
+        pr = create_pr(
+            files_to_commit,
+            repo,
+            patch_logs.get(repo, []),
+            repo_data[repo]["all_issues"]
+        )
 
         if not pr:
             return {"error": "PR creation failed"}
@@ -267,7 +266,8 @@ async def create_pr_api(payload: dict):
     except Exception as e:
         print("[PR ERROR]", traceback.format_exc())
         return {"error": f"PR creation failed: {str(e)}"}
-    
+
+
 # =========================
 # PR Status
 # =========================
