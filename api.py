@@ -152,7 +152,7 @@ async def preview_fix(payload: dict):
             path = os.path.join(root, f)
 
             try:
-                with open(path, "r") as file:
+                with open(path, "r", encoding="utf-8", errors="ignore") as file:
                     original = file.read()
             except:
                 continue
@@ -184,7 +184,7 @@ async def preview_fix(payload: dict):
     if not diffs:
         return {"message": "No fixes needed", "diffs": []}
 
-    preview_cache["files"] = diffs
+    preview_cache[repo] = diffs
 
     return {
         "diffs": diffs,
@@ -196,28 +196,70 @@ async def preview_fix(payload: dict):
 
 
 # =========================
-# 🚀 Create PR
+# 🚀 Create PR (FIXED - ENTERPRISE)
 # =========================
 @app.post("/create-pr")
-async def create_pr_api():
+async def create_pr_api(payload: dict):
     global last_pr_number
 
-    if "files" not in preview_cache:
+    import traceback
+
+    repo = payload.get("repo")
+
+    if not repo:
+        return {"error": "repo required"}
+
+    if repo not in preview_cache:
         return {"error": "Run preview first"}
 
-    pr_links = []
+    try:
+        repo_name = repo.split("/")[-1]
 
-    for file_data in preview_cache["files"]:
-        file_path = file_data["file"].split("repos/")[-1]
-        updated = file_data["updated"]
+        def normalize_git_path(file_path):
+            prefix = f"repos/{repo_name}/"
+            if file_path.startswith(prefix):
+                return file_path[len(prefix):]
+            return file_path
 
-        pr = create_pr(file_path, updated)
+        files_to_commit = []
+        seen = set()
+
+        for file_data in preview_cache[repo]:
+            raw_path = file_data["file"]
+            updated = file_data["updated"]
+
+            normalized_path = normalize_git_path(raw_path)
+
+            if normalized_path in seen:
+                continue
+            seen.add(normalized_path)
+
+            print(f"[PR] File: {normalized_path}")
+
+            files_to_commit.append({
+                "path": normalized_path,
+                "content": updated
+            })
+
+        if not files_to_commit:
+            return {"error": "No files to commit"}
+
+        pr = create_pr(files_to_commit, repo)
+
+        if not pr:
+            return {"error": "PR creation failed"}
 
         last_pr_number = pr.get("number")
-        pr_links.append(pr.get("url"))
 
-    return {"urls": pr_links}
+        return {
+            "url": pr.get("url"),
+            "files": len(files_to_commit),
+            "message": "PR created successfully"
+        }
 
+    except Exception as e:
+        print("[PR ERROR]", traceback.format_exc())
+        return {"error": f"PR creation failed: {str(e)}"}
 
 # =========================
 # PR Status
