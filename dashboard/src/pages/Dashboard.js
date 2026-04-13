@@ -171,20 +171,16 @@ export default function Dashboard() {
 
         console.log("[POLL] PR:", res.data);
 
-        if (res.data.merged) {
-          console.log("[AUTO] PR merged detected");
+        // 🔥 FIX: WAIT FOR BOTH merged + revalidated
+        if (res.data.merged && res.data.revalidated) {
+          console.log("[AUTO] PR merged & revalidated");
 
           clearInterval(interval);
 
-          // 🔥 Trigger backend revalidation
-          await axios.post("http://localhost:8000/auto-revalidate", {
-            pr_number: lastPRNumber
-          });
-
-          // 🔥 Refresh UI
+          // 🔥 ONLY refresh UI (backend already scanned)
           await runScan();
 
-          alert("✅ PR merged & auto revalidated!");
+          alert("✅ PR merged & dashboard updated!");
         }
 
       } catch (err) {
