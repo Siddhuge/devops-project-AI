@@ -14,6 +14,9 @@ from core.dependency_patcher import patch_dependency_file
 from core.diff_generator import generate_diff
 from core.github_pr import create_pr, get_pr_status
 
+# 🔥 NEW (explainer integration)
+from core.explainer import generate_summary
+
 app = FastAPI()
 
 app.add_middleware(
@@ -30,7 +33,7 @@ app.add_middleware(
 repo_data = {}
 onboarded_repos = []
 preview_cache = {}
-patch_logs = {}  # 🔥 NEW
+patch_logs = {}
 last_pr_number = None
 
 
@@ -74,7 +77,6 @@ async def scan_repo(payload: dict):
         language = detect_language(repo_path)
 
         plugins = load_plugins()
-
         results = await execute_plugins(plugins, repo_path)
 
         all_issues = deduplicate(results)
@@ -124,7 +126,7 @@ def get_history(repo: str):
 
 
 # =========================
-# 🔍 Preview Fix (UPDATED)
+# 🔍 Preview Fix (FIXED)
 # =========================
 @app.post("/preview-fix")
 async def preview_fix(payload: dict):
@@ -140,7 +142,7 @@ async def preview_fix(payload: dict):
     print(f"[PREVIEW] Using issues: {len(issues)}")
 
     diffs = []
-    patch_log = []  # 🔥 NEW
+    patch_log = []  # 🔥 NOW WILL BE FILLED
 
     for root, _, files in os.walk(repo_path):
         for f in files:
@@ -155,9 +157,19 @@ async def preview_fix(payload: dict):
 
             updated = original
 
-            # 🔥 Dependency patching (WITH LOG)
+            # =========================
+            # 🔥 DEPENDENCY PATCH (FIXED)
+            # =========================
             if f in ["requirements.txt", "package.json", "pom.xml"]:
-                updated = patch_dependency_file(path, issues)
+
+                result = patch_dependency_file(path, issues)
+
+                # 🔥 SUPPORT BOTH RETURNS (IMPORTANT)
+                if isinstance(result, tuple):
+                    updated, log = result
+                    patch_log.extend(log)
+                else:
+                    updated = result
 
             elif f.lower() == "dockerfile":
                 updated = semantic_patch_dockerfile(original, issues)
@@ -180,19 +192,23 @@ async def preview_fix(payload: dict):
         return {"message": "No fixes needed", "diffs": []}
 
     preview_cache[repo] = diffs
-    patch_logs[repo] = patch_log  # 🔥 STORE
+    patch_logs[repo] = patch_log  # 🔥 NOW WORKING
+
+    # 🔥 AI SUMMARY (NEW)
+    security_summary = generate_summary(issues)
 
     return {
         "diffs": diffs,
         "summary": {
             "files_changed": len(diffs),
-            "total_fixes": len(issues)
+            "total_fixes": len(issues),
+            "security_summary": security_summary
         }
     }
 
 
 # =========================
-# 🚀 Create PR (UPDATED)
+# 🚀 Create PR (UNCHANGED BUT NOW WORKS BETTER)
 # =========================
 @app.post("/create-pr")
 async def create_pr_api(payload: dict):
@@ -244,11 +260,10 @@ async def create_pr_api(payload: dict):
         if not files_to_commit:
             return {"error": "No files to commit"}
 
-        # 🔥 PASS PATCH LOG + ISSUES
         pr = create_pr(
             files_to_commit,
             repo,
-            patch_logs.get(repo, []),
+            patch_logs.get(repo, []),  # 🔥 NOW FILLED
             repo_data[repo]["all_issues"]
         )
 
