@@ -1,7 +1,6 @@
 import subprocess
 import json
 import os
-import re
 
 
 # =========================
@@ -17,78 +16,65 @@ def find_dockerfiles(repo_path):
 
 
 # =========================
-# 🔍 Extract base image (multi-stage safe)
+# 🔍 Extract base image
 # =========================
 def extract_base_image(dockerfile):
     try:
         with open(dockerfile) as f:
             for line in f:
                 line = line.strip()
-                if not line.startswith("FROM"):
-                    continue
-
-                parts = line.split()
-                if len(parts) >= 2:
-                    return parts[1].strip()
+                if line.startswith("FROM"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return parts[1].strip()
     except:
         pass
-
     return None
 
 
 # =========================
-# 🔥 Validate Docker Image (SAFE)
+# 🔥 Validate Docker Image
 # =========================
 def validate_image(image):
-
     try:
         result = subprocess.run(
             ["docker", "pull", image],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            timeout=30,
-            text=True
+            stderr=subprocess.DEVNULL,
+            timeout=20
         )
-
-        if result.returncode == 0:
-            return True
-
-        return False
-
-    except Exception as e:
+        return result.returncode == 0
+    except:
         return False
 
 
 # =========================
-# 🔥 Dynamic Image Resolver (IMPROVED)
+# 🔥 Dynamic Image Resolver (FIXED)
 # =========================
 def get_valid_image(base_image):
 
-    candidates = []
-
-    # Normalize
     if ":" in base_image:
         name, tag = base_image.split(":", 1)
     else:
         name, tag = base_image, "latest"
 
-    # 🔥 Smart candidate generation
+    # 🔥 Improved dynamic candidates (NOT language-specific)
     candidates = [
         base_image,
         f"{name}:{tag}-slim",
         f"{name}:{tag}-alpine",
+        f"{name}:{tag}-jdk",     # ✅ NEW
+        f"{name}:{tag}-jre",     # ✅ NEW
         f"{name}:latest",
         name
     ]
 
-    # Remove duplicates
     candidates = list(dict.fromkeys(candidates))
 
     print(f"[DEBUG] Image candidates: {candidates}")
 
     for img in candidates:
         print(f"[TRY] {img}")
-
         if validate_image(img):
             print(f"[IMAGE] Using: {img}")
             return img
@@ -98,7 +84,7 @@ def get_valid_image(base_image):
 
 
 # =========================
-# 🔥 Deduplicate issues (PLUGIN LEVEL)
+# 🔥 Deduplicate issues (SAFE)
 # =========================
 def deduplicate_issues(issues):
 
@@ -106,7 +92,11 @@ def deduplicate_issues(issues):
     unique = []
 
     for i in issues:
-        key = (i["id"], i["package"], i["target"])
+        key = (
+            i.get("id"),
+            i.get("package"),
+            i.get("target")
+        )
 
         if key in seen:
             continue
@@ -115,6 +105,31 @@ def deduplicate_issues(issues):
         unique.append(i)
 
     return unique
+
+
+# =========================
+# 🔥 Add priority + confidence
+# =========================
+def enrich_issue(issue):
+
+    severity = issue.get("severity", "LOW")
+
+    priority_map = {
+        "CRITICAL": 4,
+        "HIGH": 3,
+        "MEDIUM": 2,
+        "LOW": 1
+    }
+
+    issue["priority"] = priority_map.get(severity, 0)
+
+    # 🔥 Confidence logic (simple but effective)
+    if issue.get("fix"):
+        issue["confidence"] = 90
+    else:
+        issue["confidence"] = 60
+
+    return issue
 
 
 # =========================
@@ -127,13 +142,13 @@ async def run(repo_path):
     print(f"[SCAN] Starting scan for: {repo_path}")
 
     # =========================
-    # 🔥 FILESYSTEM SCAN (OPTIMIZED)
+    # 🔥 FILESYSTEM SCAN
     # =========================
     fs = subprocess.run(
         [
             "trivy",
             "fs",
-            "--scanners", "vuln",   # 🔥 faster
+            "--scanners", "vuln",
             "--format", "json",
             repo_path
         ],
@@ -148,14 +163,16 @@ async def run(repo_path):
 
     for r in data.get("Results", []):
         for v in r.get("Vulnerabilities", []):
-            issues.append({
+            issue = {
                 "id": v.get("VulnerabilityID"),
                 "severity": v.get("Severity"),
                 "package": v.get("PkgName"),
                 "fix": v.get("FixedVersion"),
                 "target": r.get("Target"),
                 "source": "fs"
-            })
+            }
+
+            issues.append(enrich_issue(issue))
 
     print(f"[DEBUG] FS findings: {len(issues)}")
 
@@ -180,21 +197,17 @@ async def run(repo_path):
 
         valid_image = get_valid_image(base_image)
 
-        # 🔥 If no valid image → fallback info
         if not valid_image:
-            issues.append({
+            issues.append(enrich_issue({
                 "id": "IMAGE_NOT_FOUND",
                 "severity": "LOW",
                 "package": base_image,
-                "fix": "Use a valid/supported base image",
+                "fix": "Use supported base image",
                 "target": dockerfile,
                 "source": "docker"
-            })
+            }))
             continue
 
-        # =========================
-        # 🔍 Image Scan
-        # =========================
         img = subprocess.run(
             [
                 "trivy",
@@ -214,19 +227,25 @@ async def run(repo_path):
 
         for r in img_data.get("Results", []):
             for v in r.get("Vulnerabilities", []):
-                issues.append({
+
+                issue = {
                     "id": v.get("VulnerabilityID"),
                     "severity": v.get("Severity"),
                     "package": v.get("PkgName"),
                     "fix": v.get("FixedVersion"),
                     "target": dockerfile,
                     "source": f"image:{valid_image}"
-                })
+                }
+
+                issues.append(enrich_issue(issue))
 
     # =========================
     # 🔥 FINAL CLEANUP
     # =========================
     issues = deduplicate_issues(issues)
+
+    # 🔥 Sort by priority (enterprise UX)
+    issues.sort(key=lambda x: x.get("priority", 0), reverse=True)
 
     print(f"[FINAL] Total findings: {len(issues)}")
 
