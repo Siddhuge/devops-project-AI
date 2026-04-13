@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import os
+import subprocess  # 🔥 NEW
 
 from core.plugin_loader import load_plugins
 from core.executor import execute_plugins
@@ -14,7 +15,6 @@ from core.dependency_patcher import patch_dependency_file
 from core.diff_generator import generate_diff
 from core.github_pr import create_pr, get_pr_status
 
-# 🔥 NEW (explainer integration)
 from core.explainer import generate_summary
 
 app = FastAPI()
@@ -36,6 +36,29 @@ preview_cache = {}
 patch_logs = {}
 last_pr_number = None
 
+# 🔥 NEW
+pr_repo_map = {}
+
+
+# =========================
+# 🔥 Repo Sync Function
+# =========================
+def update_repo(repo_path):
+    try:
+        print("[GIT] Fetching latest...")
+        subprocess.run(["git", "-C", repo_path, "fetch"], check=True)
+
+        print("[GIT] Resetting to origin/main...")
+        subprocess.run(
+            ["git", "-C", repo_path, "reset", "--hard", "origin/main"],
+            check=True
+        )
+
+        print("[GIT] Repo updated successfully")
+
+    except Exception as e:
+        print("[GIT ERROR]", e)
+
 
 # =========================
 # Repo onboarding
@@ -56,7 +79,7 @@ def get_onboarded():
 
 
 # =========================
-# 🚀 SCAN
+# 🚀 SCAN (UPDATED)
 # =========================
 @app.post("/scan")
 async def scan_repo(payload: dict):
@@ -70,7 +93,11 @@ async def scan_repo(payload: dict):
 
         if repo in repo_data and os.path.exists(repo_data[repo]["path"]):
             repo_path = repo_data[repo]["path"]
-            print("[CACHE] Using existing repo")
+
+            # 🔥 FIX: ALWAYS SYNC
+            print("[CACHE] Updating repo before scan")
+            update_repo(repo_path)
+
         else:
             repo_path = clone_repo(repo)
 
@@ -126,7 +153,7 @@ def get_history(repo: str):
 
 
 # =========================
-# 🔍 Preview Fix (FIXED)
+# 🔍 Preview Fix (UNCHANGED)
 # =========================
 @app.post("/preview-fix")
 async def preview_fix(payload: dict):
@@ -142,11 +169,10 @@ async def preview_fix(payload: dict):
     print(f"[PREVIEW] Using issues: {len(issues)}")
 
     diffs = []
-    patch_log = []  # 🔥 NOW WILL BE FILLED
+    patch_log = []
 
     for root, _, files in os.walk(repo_path):
         for f in files:
-
             path = os.path.join(root, f)
 
             try:
@@ -157,14 +183,9 @@ async def preview_fix(payload: dict):
 
             updated = original
 
-            # =========================
-            # 🔥 DEPENDENCY PATCH (FIXED)
-            # =========================
             if f in ["requirements.txt", "package.json", "pom.xml"]:
-
                 result = patch_dependency_file(path, issues)
 
-                # 🔥 SUPPORT BOTH RETURNS (IMPORTANT)
                 if isinstance(result, tuple):
                     updated, log = result
                     patch_log.extend(log)
@@ -179,7 +200,7 @@ async def preview_fix(payload: dict):
 
             diff = generate_diff(original, updated)
 
-            if not diff or not isinstance(diff, str):
+            if not diff:
                 continue
 
             diffs.append({
@@ -192,9 +213,8 @@ async def preview_fix(payload: dict):
         return {"message": "No fixes needed", "diffs": []}
 
     preview_cache[repo] = diffs
-    patch_logs[repo] = patch_log  # 🔥 NOW WORKING
+    patch_logs[repo] = patch_log
 
-    # 🔥 AI SUMMARY (NEW)
     security_summary = generate_summary(issues)
 
     return {
@@ -208,7 +228,7 @@ async def preview_fix(payload: dict):
 
 
 # =========================
-# 🚀 Create PR (UNCHANGED BUT NOW WORKS BETTER)
+# 🚀 Create PR (UPDATED)
 # =========================
 @app.post("/create-pr")
 async def create_pr_api(payload: dict):
@@ -216,13 +236,7 @@ async def create_pr_api(payload: dict):
 
     import traceback
 
-    repo = None
-
-    if isinstance(payload, dict):
-        repo = payload.get("repo")
-
-    if not repo and repo_data:
-        repo = list(repo_data.keys())[-1]
+    repo = payload.get("repo")
 
     if not repo:
         return {"error": "repo required"}
@@ -235,52 +249,86 @@ async def create_pr_api(payload: dict):
 
         def normalize_git_path(file_path):
             prefix = f"repos/{repo_name}/"
-            if file_path.startswith(prefix):
-                return file_path[len(prefix):]
-            return file_path
+            return file_path.replace(prefix, "")
 
         files_to_commit = []
         seen = set()
 
         for file_data in preview_cache[repo]:
-            raw_path = file_data["file"]
-            updated = file_data["updated"]
+            path = normalize_git_path(file_data["file"])
 
-            normalized_path = normalize_git_path(raw_path)
-
-            if normalized_path in seen:
+            if path in seen:
                 continue
-            seen.add(normalized_path)
+            seen.add(path)
 
             files_to_commit.append({
-                "path": normalized_path,
-                "content": updated
+                "path": path,
+                "content": file_data["updated"]
             })
-
-        if not files_to_commit:
-            return {"error": "No files to commit"}
 
         pr = create_pr(
             files_to_commit,
             repo,
-            patch_logs.get(repo, []),  # 🔥 NOW FILLED
+            patch_logs.get(repo, []),
             repo_data[repo]["all_issues"]
         )
 
         if not pr:
             return {"error": "PR creation failed"}
 
-        last_pr_number = pr.get("number")
+        pr_number = pr.get("number")
+
+        # 🔥 NEW
+        pr_repo_map[pr_number] = repo
+
+        last_pr_number = pr_number
 
         return {
             "url": pr.get("url"),
+            "number": pr_number,
             "files": len(files_to_commit),
             "message": "PR created successfully"
         }
 
     except Exception as e:
         print("[PR ERROR]", traceback.format_exc())
-        return {"error": f"PR creation failed: {str(e)}"}
+        return {"error": str(e)}
+
+
+# =========================
+# 🔍 Check PR merged
+# =========================
+@app.get("/check-pr-merged")
+def check_pr_merged(pr_number: int):
+    status = get_pr_status(pr_number)
+    return {"merged": status.get("merged", False)}
+
+
+# =========================
+# 🔁 AUTO REVALIDATE
+# =========================
+@app.post("/auto-revalidate")
+async def auto_revalidate(payload: dict):
+    pr_number = payload.get("pr_number")
+
+    if pr_number not in pr_repo_map:
+        return {"error": "Unknown PR"}
+
+    repo = pr_repo_map[pr_number]
+
+    print(f"[AUTO] Revalidating repo: {repo}")
+
+    # 🔥 Clear cache
+    repo_data.pop(repo, None)
+    preview_cache.pop(repo, None)
+
+    # 🔥 Re-scan
+    result = await scan_repo({"repo": repo})
+
+    return {
+        "message": "Revalidation complete",
+        "scan": result
+    }
 
 
 # =========================

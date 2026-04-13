@@ -28,6 +28,7 @@ export default function Dashboard() {
   const [showDiff, setShowDiff] = useState(false);
 
   const [prStatus, setPrStatus] = useState(null);
+  const [lastPRNumber, setLastPRNumber] = useState(null); // 🔥 NEW
 
   // =========================
   // Load repos
@@ -115,13 +116,13 @@ export default function Dashboard() {
       setDiff(res.data.diffs || []);
       setShowDiff(true);
 
-    } catch (err) {
+    } catch {
       alert("Preview failed");
     }
   };
 
   // =========================
-  // 🚀 FIXED Create PR
+  // 🚀 Create PR (ENHANCED)
   // =========================
   const createPR = async () => {
     if (!selectedRepo) {
@@ -132,12 +133,17 @@ export default function Dashboard() {
     try {
       const res = await axios.post(
         "http://localhost:8000/create-pr",
-        { repo: selectedRepo }   // ✅ FIX: send repo
+        { repo: selectedRepo }
       );
 
-      // ✅ Handle new backend response
       if (res.data.url) {
         alert("PR Created:\n" + res.data.url);
+
+        // 🔥 NEW: store PR number for tracking
+        if (res.data.number) {
+          setLastPRNumber(res.data.number);
+        }
+
       } else {
         alert(res.data.message || "PR Created");
       }
@@ -147,7 +153,6 @@ export default function Dashboard() {
     } catch (err) {
       console.error(err);
 
-      // ✅ Show backend error clearly
       const msg =
         err?.response?.data?.error ||
         err?.message ||
@@ -158,12 +163,36 @@ export default function Dashboard() {
   };
 
   // =========================
-  // PR Status
+  // 🔁 PR Status (ENHANCED)
   // =========================
   const checkStatus = async () => {
-    const res = await axios.get("http://localhost:8000/pr-status");
-    setPrStatus(res.data);
+    try {
+      const res = await axios.get("http://localhost:8000/pr-status");
+      setPrStatus(res.data);
+
+      // 🔥 AUTO RESCAN WHEN MERGED
+      if (res.data.merged) {
+        console.log("[AUTO] PR merged → triggering re-scan");
+        await runScan();
+      }
+
+    } catch {
+      console.log("Failed to fetch PR status");
+    }
   };
+
+  // =========================
+  // 🔥 AUTO POLLING (NEW)
+  // =========================
+  useEffect(() => {
+    if (!lastPRNumber) return;
+
+    const interval = setInterval(() => {
+      checkStatus();
+    }, 5000); // every 5 sec
+
+    return () => clearInterval(interval);
+  }, [lastPRNumber]);
 
   useEffect(() => {
     loadRepos();

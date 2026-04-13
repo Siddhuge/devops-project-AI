@@ -2,12 +2,11 @@ import json
 import re
 import xml.etree.ElementTree as ET
 
-# 🔥 NEW IMPORTS (INTEGRATION)
 from core.risk_engine import calculate_risk, calculate_confidence
 
 
 # =========================
-# 🔥 VERSION PARSER (SAFE)
+# 🔥 VERSION PARSER
 # =========================
 def normalize_version(v):
     return re.sub(r"[^\d\.]", "", v or "")
@@ -28,7 +27,17 @@ def get_major(v):
 
 
 # =========================
-# 🔥 SMART VERSION PICKER (CVE-AWARE)
+# 🔥 NEW: FIX DETECTION (CRITICAL)
+# =========================
+def is_already_fixed(current, new):
+    try:
+        return version_tuple(current) >= version_tuple(new)
+    except:
+        return False
+
+
+# =========================
+# 🔥 SMART VERSION PICKER
 # =========================
 def pick_safe_version(current, fixes):
 
@@ -66,7 +75,7 @@ def pick_safe_version(current, fixes):
 
 
 # =========================
-# 🔥 BUILD FIX MAP (IMPROVED)
+# 🔥 BUILD FIX MAP
 # =========================
 def build_fix_map(issues):
 
@@ -84,10 +93,7 @@ def build_fix_map(issues):
         if isinstance(fixes, str):
             fixes = [f.strip() for f in fixes.split(",")]
 
-        if pkg not in fix_map:
-            fix_map[pkg] = []
-
-        fix_map[pkg].extend(fixes)
+        fix_map.setdefault(pkg, []).extend(fixes)
 
         if ":" in pkg:
             short = pkg.split(":")[-1]
@@ -97,7 +103,7 @@ def build_fix_map(issues):
 
 
 # =========================
-# 🔥 AI REASONING (UPDATED WITH RISK ENGINE)
+# 🔥 AI REASONING
 # =========================
 def generate_reason(pkg, old, new, issue=None):
 
@@ -138,7 +144,8 @@ def patch_requirements(content, fix_map, issues, patch_log):
         if pkg in fix_map:
             new_version = pick_safe_version(current_version, fix_map[pkg])
 
-            if not new_version or new_version == current_version:
+            # 🔥 FIX: skip already fixed
+            if not new_version or is_already_fixed(current_version, new_version):
                 updated.append(line)
                 continue
 
@@ -181,7 +188,7 @@ def patch_package_json(content, fix_map, issues, patch_log):
 
                 new_version = pick_safe_version(current_version, fix_map[key])
 
-                if not new_version or new_version in current_version:
+                if not new_version or is_already_fixed(current_version, new_version):
                     continue
 
                 print(f"[PATCH][NODE] {pkg} → {new_version}")
@@ -231,7 +238,8 @@ def patch_pom_xml(content, fix_map, issues, patch_log):
 
         new_version = pick_safe_version(current_version, fixes)
 
-        if not new_version or new_version == current_version:
+        # 🔥 FIX HERE
+        if not new_version or is_already_fixed(current_version, new_version):
             continue
 
         print(f"[PATCH][MAVEN] {full_pkg} {current_version} → {new_version}")
@@ -250,7 +258,7 @@ def patch_pom_xml(content, fix_map, issues, patch_log):
 
 
 # =========================
-# 🚀 MAIN ENTRY (UPDATED)
+# 🚀 MAIN ENTRY
 # =========================
 def patch_dependency_file(file_path, issues):
 
@@ -271,9 +279,6 @@ def patch_dependency_file(file_path, issues):
     elif file_path.endswith("pom.xml"):
         updated = patch_pom_xml(content, fix_map, issues, patch_log)
 
-    # =========================
-    # 🛑 IDEMPOTENCY CHECK
-    # =========================
     if updated.strip() == content.strip():
         return content
 

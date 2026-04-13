@@ -27,6 +27,16 @@ def get_github_repo(repo_full_name=None):
 
 
 # =========================
+# 🔥 Get Default Branch (NEW)
+# =========================
+def get_default_branch(repo):
+    try:
+        return repo.default_branch
+    except Exception:
+        return "main"
+
+
+# =========================
 # 🧠 BUILD PR BODY (AI ENHANCED)
 # =========================
 def build_pr_body(files, patch_log=None, issues=None):
@@ -52,12 +62,14 @@ def build_pr_body(files, patch_log=None, issues=None):
         body += "\n---\n"
 
     # =========================
-    # ⚠️ RISK SUMMARY
+    # ⚠️ RISK SUMMARY (IMPROVED)
     # =========================
     risk = "LOW"
 
     if patch_log:
-        if any("HIGH" in p for p in patch_log):
+        if any("CRITICAL" in p for p in patch_log):
+            risk = "CRITICAL"
+        elif any("HIGH" in p for p in patch_log):
             risk = "HIGH"
         elif any("MEDIUM" in p for p in patch_log):
             risk = "MEDIUM"
@@ -82,7 +94,9 @@ def create_pr(files, repo_full_name, patch_log=None, issues=None):
 
     repo = get_github_repo(repo_full_name)
 
-    base_branch = "main"
+    # 🔥 NEW: dynamic default branch
+    base_branch = get_default_branch(repo)
+
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     branch_name = f"ai-fix-{timestamp}"
 
@@ -158,7 +172,9 @@ def create_pr(files, repo_full_name, patch_log=None, issues=None):
 
         return {
             "url": pr.html_url,
-            "number": pr.number
+            "number": pr.number,
+            "branch": branch_name,          # 🔥 NEW (useful later)
+            "base": base_branch             # 🔥 NEW
         }
 
     except Exception as e:
@@ -167,15 +183,18 @@ def create_pr(files, repo_full_name, patch_log=None, issues=None):
 
 
 # =========================
-# 🔁 PR Status
+# 🔁 PR Status (IMPROVED)
 # =========================
-def get_pr_status(pr_number):
+def get_pr_status(pr_number, repo_full_name=None):
 
-    repo = get_github_repo()
+    repo = get_github_repo(repo_full_name)
 
     pr = repo.get_pull(pr_number)
 
     return {
         "state": pr.state,
-        "merged": pr.is_merged()
+        "merged": pr.merged,                      # 🔥 FIXED (better than is_merged)
+        "merged_at": str(pr.merged_at) if pr.merged else None,
+        "base": pr.base.ref,
+        "head": pr.head.ref
     }
