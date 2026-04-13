@@ -20,6 +20,11 @@ def build_fix_map(issues):
         pkg = pkg.lower()
 
         # Store full package (e.g., org.springframework:spring-core)
+        # Pick the safest (latest) version
+        if "," in fix:
+            versions = [v.strip() for v in fix.split(",")]
+            fix = versions[0]   # 🔥 choose highest priority
+
         fix_map[pkg] = fix
 
         # Also store short name (artifactId / package name)
