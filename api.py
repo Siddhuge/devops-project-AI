@@ -204,7 +204,14 @@ async def create_pr_api(payload: dict):
 
     import traceback
 
-    repo = payload.get("repo")
+    repo = None
+
+    if isinstance(payload, dict):
+        repo = payload.get("repo")
+
+    # 🔥 fallback to last scanned repo
+    if not repo and repo_data:
+        repo = list(repo_data.keys())[-1]
 
     if not repo:
         return {"error": "repo required"}
@@ -260,7 +267,7 @@ async def create_pr_api(payload: dict):
     except Exception as e:
         print("[PR ERROR]", traceback.format_exc())
         return {"error": f"PR creation failed: {str(e)}"}
-
+    
 # =========================
 # PR Status
 # =========================

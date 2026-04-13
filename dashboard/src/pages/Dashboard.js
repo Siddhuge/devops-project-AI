@@ -18,19 +18,15 @@ export default function Dashboard() {
   const [history, setHistory] = useState([]);
   const [lastScan, setLastScan] = useState(null);
 
-  // Multi-repo
   const [repos, setRepos] = useState([]);
   const [selectedRepo, setSelectedRepo] = useState("");
   const [newRepo, setNewRepo] = useState("");
 
-  // Language
   const [language, setLanguage] = useState("");
 
-  // 🔥 FIX: Diff should be ARRAY (multi-dockerfile)
   const [diff, setDiff] = useState([]);
   const [showDiff, setShowDiff] = useState(false);
 
-  // PR Status
   const [prStatus, setPrStatus] = useState(null);
 
   // =========================
@@ -97,48 +93,67 @@ export default function Dashboard() {
   };
 
   // =========================
-  // 🔥 FIXED Preview Fix
+  // Preview Fix
   // =========================
   const previewFix = async () => {
+    if (!selectedRepo) {
+      alert("Select repo first");
+      return;
+    }
+
     try {
       const res = await axios.post(
         "http://localhost:8000/preview-fix",
         { repo: selectedRepo }
       );
 
-      // ✅ Handle "no fixes"
       if (res.data.message) {
         alert(res.data.message);
         return;
       }
 
-      // ✅ Multi-diff support
       setDiff(res.data.diffs || []);
       setShowDiff(true);
 
-    } catch {
+    } catch (err) {
       alert("Preview failed");
     }
   };
 
   // =========================
-  // 🔥 FIXED Create PR
+  // 🚀 FIXED Create PR
   // =========================
   const createPR = async () => {
-    try {
-      const res = await axios.post("http://localhost:8000/create-pr");
+    if (!selectedRepo) {
+      alert("Select repo first");
+      return;
+    }
 
-      // ✅ Handle multiple PRs
-      if (res.data.urls) {
-        alert("PRs Created:\n" + res.data.urls.join("\n"));
+    try {
+      const res = await axios.post(
+        "http://localhost:8000/create-pr",
+        { repo: selectedRepo }   // ✅ FIX: send repo
+      );
+
+      // ✅ Handle new backend response
+      if (res.data.url) {
+        alert("PR Created:\n" + res.data.url);
       } else {
-        alert("PR Created");
+        alert(res.data.message || "PR Created");
       }
 
       setShowDiff(false);
 
-    } catch {
-      alert("PR creation failed");
+    } catch (err) {
+      console.error(err);
+
+      // ✅ Show backend error clearly
+      const msg =
+        err?.response?.data?.error ||
+        err?.message ||
+        "PR creation failed";
+
+      alert(msg);
     }
   };
 
@@ -171,7 +186,6 @@ export default function Dashboard() {
 
       <div className="p-6">
 
-        {/* Controls */}
         <div className="flex justify-between mb-3">
 
           <div className="flex space-x-2 items-center">
@@ -224,17 +238,14 @@ export default function Dashboard() {
 
         </div>
 
-        {/* Language */}
         <div className="text-sm mb-2">
           Language: <b>{language}</b>
         </div>
 
-        {/* Last Scan */}
         <div className="text-sm text-gray-600 mb-2">
           Last Scan: {lastScan || "Never"}
         </div>
 
-        {/* PR Status */}
         {prStatus && (
           <div className="mb-4 p-2 bg-white rounded shadow">
             PR: {prStatus.state} | Merged: {prStatus.merged?.toString()}
@@ -257,7 +268,6 @@ export default function Dashboard() {
 
       </div>
 
-      {/* Diff Modal */}
       {showDiff && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center">
 
