@@ -77,34 +77,41 @@ async def scan_repo(payload: dict):
 
         results = await execute_plugins(plugins, repo_path)
 
-        deduped = deduplicate(results)
+        # 🔥 FULL DATASET (deduplicated)
+        all_issues = deduplicate(results)
 
-        # 🔥 FILTER NOISE (IMPORTANT)
-        deduped = [
-            i for i in deduped
+        # 🔥 FILTER FOR UI ONLY
+        filtered_issues = [
+            i for i in all_issues
             if i.get("severity") in ["HIGH", "CRITICAL"]
-        ]
+        ][:50]  # 🔥 UX CAP
 
-        for i in deduped:
+        # Add confidence only for UI
+        for i in filtered_issues:
             i["confidence"] = calculate_confidence(i, language)
 
         snapshot = {
             "time": datetime.now().strftime("%H:%M:%S"),
-            "CRITICAL": len([i for i in deduped if i["severity"] == "CRITICAL"]),
-            "HIGH": len([i for i in deduped if i["severity"] == "HIGH"]),
-            "MEDIUM": len([i for i in deduped if i["severity"] == "MEDIUM"]),
-            "LOW": len([i for i in deduped if i["severity"] == "LOW"]),
+            "CRITICAL": len([i for i in filtered_issues if i["severity"] == "CRITICAL"]),
+            "HIGH": len([i for i in filtered_issues if i["severity"] == "HIGH"]),
+            "MEDIUM": len([i for i in filtered_issues if i["severity"] == "MEDIUM"]),
+            "LOW": len([i for i in filtered_issues if i["severity"] == "LOW"]),
         }
 
         repo_data[repo] = {
-            "issues": deduped,              # 🔹 filtered (UI)
-            "all_issues": results,          # 🔥 FULL issues (IMPORTANT FIX)
+            "issues": filtered_issues,     # 🔹 UI
+            "all_issues": all_issues,      # 🔥 FULL (FIXED)
             "history": repo_data.get(repo, {}).get("history", []) + [snapshot],
             "path": repo_path
         }
-        print(f"[SCAN COMPLETE] {len(deduped)} issues")
 
-        return {"issues": deduped, "total_issues": len(results), "language": language}
+        print(f"[SCAN COMPLETE] {len(filtered_issues)} issues (filtered) | {len(all_issues)} total")
+
+        return {
+            "issues": filtered_issues,
+            "total_issues": len(all_issues),   # 🔥 FIXED
+            "language": language
+        }
 
     except Exception as e:
         print("[ERROR]", e)
@@ -131,7 +138,10 @@ async def preview_fix(payload: dict):
         return {"error": "Run scan first"}
 
     repo_path = repo_info["path"]
+
+    # 🔥 ALWAYS USE FULL DATA
     issues = repo_info.get("all_issues", repo_info["issues"])
+
     print(f"[PREVIEW] Using issues: {len(issues)}")
 
     diffs = []
@@ -153,17 +163,15 @@ async def preview_fix(payload: dict):
             if f in ["requirements.txt", "package.json", "pom.xml"]:
                 updated = patch_dependency_file(path, issues)
 
-            # 🔥 Dockerfile patching (minimal)
+            # 🔥 Dockerfile patching
             elif f.lower() == "dockerfile":
                 updated = semantic_patch_dockerfile(original, issues)
 
-            # Skip unchanged
             if original.strip() == updated.strip():
                 continue
 
             diff = generate_diff(original, updated)
 
-            # 🔥 PREVENT UI CRASH
             if not diff or not isinstance(diff, str):
                 continue
 

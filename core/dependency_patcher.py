@@ -4,7 +4,62 @@ import xml.etree.ElementTree as ET
 
 
 # =========================
-# 🔥 BUILD FIX MAP (SMART + NORMALIZED)
+# 🔥 VERSION PARSER (SAFE)
+# =========================
+def normalize_version(v):
+    return re.sub(r"[^\d\.]", "", v)
+
+
+def version_tuple(v):
+    try:
+        return tuple(int(x) for x in normalize_version(v).split(".") if x)
+    except:
+        return (0,)
+
+
+# =========================
+# 🔥 PICK SAFEST VERSION (SMART)
+# =========================
+def pick_safe_version(current, fixes):
+
+    if not fixes:
+        return None
+
+    if isinstance(fixes, str):
+        fixes = [f.strip() for f in fixes.split(",")]
+
+    fixes = [f for f in fixes if f]
+
+    if not fixes:
+        return None
+
+    try:
+        current_major = version_tuple(current)[0]
+    except:
+        current_major = None
+
+    safe_versions = []
+
+    for f in fixes:
+        try:
+            f_major = version_tuple(f)[0]
+        except:
+            continue
+
+        # Prefer same major version (avoid breaking)
+        if current_major is not None and f_major == current_major:
+            safe_versions.append(f)
+
+    # If same-major available → pick smallest safe upgrade
+    if safe_versions:
+        return sorted(safe_versions, key=version_tuple)[0]
+
+    # fallback → pick lowest version overall
+    return sorted(fixes, key=version_tuple)[0]
+
+
+# =========================
+# 🔥 BUILD FIX MAP (SMART)
 # =========================
 def build_fix_map(issues):
 
@@ -19,24 +74,25 @@ def build_fix_map(issues):
 
         pkg = pkg.lower()
 
-        # Store full package (e.g., org.springframework:spring-core)
-        # Pick the safest (latest) version
-        if "," in fix:
-            versions = [v.strip() for v in fix.split(",")]
-            fix = versions[0]   # 🔥 choose highest priority
+        if pkg not in fix_map:
+            fix_map[pkg] = []
 
-        fix_map[pkg] = fix
+        # store all possible fixes
+        if isinstance(fix, str):
+            fix_map[pkg].extend([f.strip() for f in fix.split(",")])
 
-        # Also store short name (artifactId / package name)
+        # short name support
         if ":" in pkg:
             short = pkg.split(":")[-1]
-            fix_map[short] = fix
+            if short not in fix_map:
+                fix_map[short] = []
+            fix_map[short].extend(fix_map[pkg])
 
     return fix_map
 
 
 # =========================
-# 🐍 PYTHON PATCHER (robust)
+# 🐍 PYTHON PATCHER
 # =========================
 def patch_requirements(content, fix_map):
 
@@ -45,29 +101,27 @@ def patch_requirements(content, fix_map):
 
     for line in lines:
 
-        # Skip comments
         if line.strip().startswith("#") or not line.strip():
             updated.append(line)
             continue
 
-        # Extract package name
-        match = re.match(r"([a-zA-Z0-9_\-]+)", line)
+        match = re.match(r"([a-zA-Z0-9_\-]+)(==([\w\.\-]+))?", line)
         if not match:
             updated.append(line)
             continue
 
         pkg = match.group(1).lower()
+        current_version = match.group(3)
 
         if pkg in fix_map:
-            new_version = fix_map[pkg]
+            new_version = pick_safe_version(current_version, fix_map[pkg])
 
-            # Skip if already fixed
-            if new_version in line:
+            if not new_version or new_version == current_version:
                 updated.append(line)
                 continue
 
+            print(f"[PATCH][PY] {pkg} {current_version} → {new_version}")
             updated.append(f"{pkg}=={new_version}")
-            print(f"[PATCH][PY] {pkg} → {new_version}")
         else:
             updated.append(line)
 
@@ -75,7 +129,7 @@ def patch_requirements(content, fix_map):
 
 
 # =========================
-# 🟢 NODE PATCHER (safe)
+# 🟢 NODE PATCHER
 # =========================
 def patch_package_json(content, fix_map):
 
@@ -94,17 +148,16 @@ def patch_package_json(content, fix_map):
         for pkg in data[section]:
 
             key = pkg.lower()
+            current_version = data[section][pkg]
 
             if key in fix_map:
 
-                new_version = fix_map[key]
+                new_version = pick_safe_version(current_version, fix_map[key])
 
-                # Skip if already fixed
-                if new_version in data[section][pkg]:
+                if not new_version or new_version in current_version:
                     continue
 
                 print(f"[PATCH][NODE] {pkg} → {new_version}")
-
                 data[section][pkg] = new_version
                 updated_flag = True
 
@@ -115,7 +168,7 @@ def patch_package_json(content, fix_map):
 
 
 # =========================
-# ☕ MAVEN PATCHER (CORRECT FIX)
+# ☕ MAVEN PATCHER
 # =========================
 def patch_pom_xml(content, fix_map):
 
@@ -137,22 +190,19 @@ def patch_pom_xml(content, fix_map):
 
         full_pkg = f"{group.text}:{artifact.text}".lower()
         short_pkg = artifact.text.lower()
+        current_version = version.text
 
-        new_version = None
+        fixes = fix_map.get(full_pkg) or fix_map.get(short_pkg)
 
-        if full_pkg in fix_map:
-            new_version = fix_map[full_pkg]
-        elif short_pkg in fix_map:
-            new_version = fix_map[short_pkg]
-
-        if not new_version:
+        if not fixes:
             continue
 
-        # Skip if already fixed
-        if version.text == new_version:
+        new_version = pick_safe_version(current_version, fixes)
+
+        if not new_version or new_version == current_version:
             continue
 
-        print(f"[PATCH][MAVEN] {full_pkg} {version.text} → {new_version}")
+        print(f"[PATCH][MAVEN] {full_pkg} {current_version} → {new_version}")
 
         version.text = new_version
         updated_flag = True
@@ -164,7 +214,7 @@ def patch_pom_xml(content, fix_map):
 
 
 # =========================
-# 🚀 MAIN ENTRY POINT
+# 🚀 MAIN ENTRY
 # =========================
 def patch_dependency_file(file_path, issues):
 
