@@ -24,15 +24,12 @@ def extract_base_image(dockerfile):
         with open(dockerfile) as f:
             for line in f:
                 line = line.strip()
-
                 if not line.startswith("FROM"):
                     continue
 
-                # Handle: FROM image AS builder
                 parts = line.split()
                 if len(parts) >= 2:
                     return parts[1].strip()
-
     except:
         pass
 
@@ -40,14 +37,34 @@ def extract_base_image(dockerfile):
 
 
 # =========================
-# 🔥 Dynamic image resolution (NO hardcoding)
+# 🔥 Validate Docker Image (SAFE)
+# =========================
+def validate_image(image):
+
+    try:
+        result = subprocess.run(
+            ["docker", "pull", image],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            text=True
+        )
+
+        if result.returncode == 0:
+            return True
+
+        return False
+
+    except Exception as e:
+        return False
+
+
+# =========================
+# 🔥 Dynamic Image Resolver (IMPROVED)
 # =========================
 def get_valid_image(base_image):
 
     candidates = []
-
-    # Original
-    candidates.append(base_image)
 
     # Normalize
     if ":" in base_image:
@@ -55,15 +72,14 @@ def get_valid_image(base_image):
     else:
         name, tag = base_image, "latest"
 
-    # Generic transformations (universal)
-    transformations = [
+    # 🔥 Smart candidate generation
+    candidates = [
+        base_image,
         f"{name}:{tag}-slim",
         f"{name}:{tag}-alpine",
         f"{name}:latest",
         name
     ]
-
-    candidates.extend(transformations)
 
     # Remove duplicates
     candidates = list(dict.fromkeys(candidates))
@@ -71,20 +87,34 @@ def get_valid_image(base_image):
     print(f"[DEBUG] Image candidates: {candidates}")
 
     for img in candidates:
-        try:
-            subprocess.run(
-                ["docker", "pull", img],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True
-            )
+        print(f"[TRY] {img}")
+
+        if validate_image(img):
             print(f"[IMAGE] Using: {img}")
             return img
-        except:
+
+    print(f"[WARN] No valid image found for base: {base_image}")
+    return None
+
+
+# =========================
+# 🔥 Deduplicate issues (PLUGIN LEVEL)
+# =========================
+def deduplicate_issues(issues):
+
+    seen = set()
+    unique = []
+
+    for i in issues:
+        key = (i["id"], i["package"], i["target"])
+
+        if key in seen:
             continue
 
-    print(f"[ERROR] No valid image found for base: {base_image}")
-    return None
+        seen.add(key)
+        unique.append(i)
+
+    return unique
 
 
 # =========================
@@ -97,10 +127,16 @@ async def run(repo_path):
     print(f"[SCAN] Starting scan for: {repo_path}")
 
     # =========================
-    # FILESYSTEM SCAN
+    # 🔥 FILESYSTEM SCAN (OPTIMIZED)
     # =========================
     fs = subprocess.run(
-        ["trivy", "fs", "--format", "json", repo_path],
+        [
+            "trivy",
+            "fs",
+            "--scanners", "vuln",   # 🔥 faster
+            "--format", "json",
+            repo_path
+        ],
         capture_output=True,
         text=True
     )
@@ -124,7 +160,7 @@ async def run(repo_path):
     print(f"[DEBUG] FS findings: {len(issues)}")
 
     # =========================
-    # DOCKER IMAGE SCAN
+    # 🐳 DOCKER IMAGE SCAN
     # =========================
     dockerfiles = find_dockerfiles(repo_path)
 
@@ -144,12 +180,29 @@ async def run(repo_path):
 
         valid_image = get_valid_image(base_image)
 
-        # 🔥 IMPORTANT: Skip instead of breaking
+        # 🔥 If no valid image → fallback info
         if not valid_image:
+            issues.append({
+                "id": "IMAGE_NOT_FOUND",
+                "severity": "LOW",
+                "package": base_image,
+                "fix": "Use a valid/supported base image",
+                "target": dockerfile,
+                "source": "docker"
+            })
             continue
 
+        # =========================
+        # 🔍 Image Scan
+        # =========================
         img = subprocess.run(
-            ["trivy", "image", "--format", "json", valid_image],
+            [
+                "trivy",
+                "image",
+                "--scanners", "vuln",
+                "--format", "json",
+                valid_image
+            ],
             capture_output=True,
             text=True
         )
@@ -169,6 +222,11 @@ async def run(repo_path):
                     "target": dockerfile,
                     "source": f"image:{valid_image}"
                 })
+
+    # =========================
+    # 🔥 FINAL CLEANUP
+    # =========================
+    issues = deduplicate_issues(issues)
 
     print(f"[FINAL] Total findings: {len(issues)}")
 
