@@ -28,7 +28,7 @@ export default function Dashboard() {
   const [showDiff, setShowDiff] = useState(false);
 
   const [prStatus, setPrStatus] = useState(null);
-  const [lastPRNumber, setLastPRNumber] = useState(null); // 🔥 NEW
+  const [lastPRNumber, setLastPRNumber] = useState(null);
 
   // =========================
   // Load repos
@@ -122,7 +122,7 @@ export default function Dashboard() {
   };
 
   // =========================
-  // 🚀 Create PR (ENHANCED)
+  // 🚀 Create PR
   // =========================
   const createPR = async () => {
     if (!selectedRepo) {
@@ -139,9 +139,8 @@ export default function Dashboard() {
       if (res.data.url) {
         alert("PR Created:\n" + res.data.url);
 
-        // 🔥 NEW: store PR number for tracking
         if (res.data.number) {
-          setLastPRNumber(res.data.number);
+          setLastPRNumber(res.data.number); // 🔥 CRITICAL
         }
 
       } else {
@@ -152,46 +151,49 @@ export default function Dashboard() {
 
     } catch (err) {
       console.error(err);
-
-      const msg =
-        err?.response?.data?.error ||
-        err?.message ||
-        "PR creation failed";
-
-      alert(msg);
+      alert(err?.response?.data?.error || "PR creation failed");
     }
   };
 
   // =========================
-  // 🔁 PR Status (ENHANCED)
-  // =========================
-  const checkStatus = async () => {
-    try {
-      const res = await axios.get("http://localhost:8000/pr-status");
-      setPrStatus(res.data);
-
-      // 🔥 AUTO RESCAN WHEN MERGED
-      if (res.data.merged) {
-        console.log("[AUTO] PR merged → triggering re-scan");
-        await runScan();
-      }
-
-    } catch {
-      console.log("Failed to fetch PR status");
-    }
-  };
-
-  // =========================
-  // 🔥 AUTO POLLING (NEW)
+  // 🔥 FIXED POLLING LOGIC
   // =========================
   useEffect(() => {
     if (!lastPRNumber) return;
 
-    const interval = setInterval(() => {
-      checkStatus();
-    }, 5000); // every 5 sec
+    const interval = setInterval(async () => {
+      try {
+        const res = await axios.get(
+          `http://localhost:8000/check-pr-merged?pr_number=${lastPRNumber}`
+        );
+
+        setPrStatus(res.data);
+
+        console.log("[POLL] PR:", res.data);
+
+        if (res.data.merged) {
+          console.log("[AUTO] PR merged detected");
+
+          clearInterval(interval);
+
+          // 🔥 Trigger backend revalidation
+          await axios.post("http://localhost:8000/auto-revalidate", {
+            pr_number: lastPRNumber
+          });
+
+          // 🔥 Refresh UI
+          await runScan();
+
+          alert("✅ PR merged & auto revalidated!");
+        }
+
+      } catch (err) {
+        console.log("Polling error", err);
+      }
+    }, 5000);
 
     return () => clearInterval(interval);
+
   }, [lastPRNumber]);
 
   useEffect(() => {
@@ -250,7 +252,6 @@ export default function Dashboard() {
           </div>
 
           <div className="space-x-2">
-
             <button onClick={runScan} className="bg-blue-600 text-white px-4 py-2 rounded">
               🔄 Scan
             </button>
@@ -258,28 +259,9 @@ export default function Dashboard() {
             <button onClick={previewFix} className="bg-purple-600 text-white px-4 py-2 rounded">
               🔍 Preview
             </button>
-
-            <button onClick={checkStatus} className="bg-gray-700 text-white px-4 py-2 rounded">
-              📊 PR Status
-            </button>
-
           </div>
 
         </div>
-
-        <div className="text-sm mb-2">
-          Language: <b>{language}</b>
-        </div>
-
-        <div className="text-sm text-gray-600 mb-2">
-          Last Scan: {lastScan || "Never"}
-        </div>
-
-        {prStatus && (
-          <div className="mb-4 p-2 bg-white rounded shadow">
-            PR: {prStatus.state} | Merged: {prStatus.merged?.toString()}
-          </div>
-        )}
 
         <Stats issues={issues} />
         <Charts issues={issues} />
