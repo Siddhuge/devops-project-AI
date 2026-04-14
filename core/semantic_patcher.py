@@ -2,27 +2,14 @@ import re
 from core.ai_fix_engine import suggest_docker_fix
 
 
-def semantic_patch_dockerfile(content, issues=None, patch_log=None):
-    """
-    🔥 Enterprise-grade Dockerfile patcher (AI + Rule Hybrid)
-
-    - AI-driven base image upgrade
-    - CVE-aware
-    - Safe (no breaking upgrades)
-    - Dynamic fallback (existing logic)
-    - 🔥 Improved OS patching (multi-stage safe)
-    """
+def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_path=None):
 
     lines = content.split("\n")
     updated = []
 
     has_user = any("USER" in l for l in lines)
-
     workdir = None
 
-    # =========================
-    # Detect WORKDIR
-    # =========================
     for l in lines:
         if l.strip().startswith("WORKDIR"):
             parts = l.strip().split()
@@ -30,38 +17,69 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
                 workdir = parts[1]
 
     # =========================
-    # EXISTING FALLBACK LOGIC
+    # 🔥 FILTER ISSUES PER DOCKERFILE (CRITICAL FIX)
     # =========================
-    def get_smart_tag(name, tag):
-
-        match = re.search(r"\d+(\.\d+)?", tag)
-        version = float(match.group()) if match else None
-
-        suffix = ""
-        if "slim" in tag:
-            suffix = "-slim"
-        elif "alpine" in tag:
-            suffix = "-alpine"
-
-        if "python" in name and version:
-            if version < 3.8:
-                return f"3.11{suffix or '-slim'}"
-
-        if "node" in name and version:
-            if version < 16:
-                return f"18{suffix or '-slim'}"
-
-        if ("openjdk" in name or "jdk" in name) and version:
-            if version < 11:
-                return "17-jre"
-
-        if not suffix:
-            return f"{tag}-slim"
-
-        return tag
+    def filter_issues_for_image(all_issues, dockerfile_path):
+        try:
+            return [
+                i for i in all_issues or []
+                if dockerfile_path and dockerfile_path in str(i.get("target", ""))
+            ]
+        except:
+            return []
 
     # =========================
-    # SAFE VERSION CHECK
+    # 🔥 ENTERPRISE CVE MATCHING
+    # =========================
+    def has_relevant_critical_cve(image_issues, image_name):
+        try:
+            if not image_issues:
+                return False
+
+            image_name = image_name.lower()
+
+            # 🔥 OS-level packages
+            os_packages = [
+                "openssl", "glibc", "musl", "libssl", "busybox",
+                "bash", "zlib", "curl", "wget", "tar"
+            ]
+
+            # 🔥 Language ecosystems
+            ecosystem_map = {
+                "node": ["node", "npm", "lodash", "express"],
+                "python": ["python", "pip", "django", "flask"],
+                "openjdk": ["java", "jdk", "log4j"],
+                "ubuntu": os_packages,
+                "debian": os_packages,
+                "alpine": ["musl", "busybox"] + os_packages
+            }
+
+            relevant_keywords = []
+
+            for key, values in ecosystem_map.items():
+                if key in image_name:
+                    relevant_keywords.extend(values)
+
+            for issue in image_issues:
+                severity = issue.get("severity", "").upper()
+                pkg = (issue.get("package") or "").lower()
+
+                if severity != "CRITICAL":
+                    continue
+
+                # 🔥 Strong match
+                if any(k in pkg for k in relevant_keywords):
+                    print(f"[CVE MATCH] {pkg} is relevant to {image_name}")
+                    return True
+
+            return False
+
+        except Exception as e:
+            print("[CVE MATCH ERROR]", e)
+            return False
+
+    # =========================
+    # VERSION HELPERS
     # =========================
     def extract_major(version):
         try:
@@ -82,39 +100,22 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
         except:
             return False
 
-    # =========================
-    # CVE CHECK
-    # =========================
-    def has_critical_cve(issues, image_name):
-        try:
-            for issue in issues or []:
-                pkg = issue.get("package", "").lower()
-                severity = issue.get("severity", "").upper()
-
-                if image_name.lower() in pkg and severity == "CRITICAL":
-                    return True
-            return False
-        except:
-            return False
-
-    # 🔥 NEW: Track OS patch per stage
     stage_has_patch = False
+
+    # 🔥 FILTERED ISSUES (IMPORTANT)
+    image_issues = filter_issues_for_image(issues, dockerfile_path)
 
     for line in lines:
 
         stripped = line.strip()
 
-        # =========================
-        # 🐳 HANDLE FROM LINE
-        # =========================
         if stripped.upper().startswith("FROM"):
 
-            # 🔥 Reset per stage
             stage_has_patch = False
 
             parts = stripped.split()
-
             image = parts[1]
+
             alias = parts[3] if len(parts) > 3 and parts[2].upper() == "AS" else None
 
             name = image
@@ -128,10 +129,10 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
             ai_result = None
 
             # =========================
-            # AI FIRST
+            # AI LOGIC
             # =========================
             try:
-                ai_result = suggest_docker_fix(image, issues)
+                ai_result = suggest_docker_fix(image, image_issues)
 
                 if ai_result:
                     confidence = ai_result.get("confidence", 0)
@@ -147,8 +148,9 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
 
                             if is_major_upgrade(tag, new_tag):
 
-                                if has_critical_cve(issues, name):
-                                    print(f"[AI OVERRIDE] Allowing major upgrade due to CRITICAL CVE: {image} → {recommended}")
+                                # 🔥 FIXED LOGIC
+                                if has_relevant_critical_cve(image_issues, name):
+                                    print(f"[AI OVERRIDE] Critical CVE matched → allowing upgrade: {image} → {recommended}")
                                     new_image = recommended
                                     changed = True
                                 else:
@@ -165,46 +167,26 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
             # FALLBACK
             # =========================
             if not changed:
+                if "slim" not in tag and "alpine" not in tag:
+                    new_image = f"{name}:{tag}-slim"
 
-                new_tag = tag
-
-                if issues:
-                    for issue in issues:
-                        if issue.get("package") == name and issue.get("fixed_versions"):
-                            new_tag = tag if "slim" in tag or "alpine" in tag else f"{tag}-slim"
-                            break
-
-                smart_tag = get_smart_tag(name, tag)
-
-                if smart_tag and smart_tag != tag:
-                    new_tag = smart_tag
-
-                new_image = f"{name}:{new_tag}"
-
-            # =========================
-            # APPLY IMAGE CHANGE
-            # =========================
             if new_image.strip() != image.strip():
                 print(f"[PATCH][DOCKER] {image} → {new_image}")
 
                 if patch_log is not None and ai_result:
-                    try:
-                        patch_log.append(
-                            f"Docker: {image} → {new_image} | "
-                            f"Risk: {ai_result.get('risk')} | "
-                            f"Confidence: {ai_result.get('confidence')}%"
-                        )
-                    except:
-                        pass
+                    patch_log.append(
+                        f"Docker: {image} → {new_image} | "
+                        f"Risk: {ai_result.get('risk')} | "
+                        f"Confidence: {ai_result.get('confidence')}%"
+                    )
 
-            # ADD FROM
             if alias:
                 updated.append(f"FROM {new_image} AS {alias}")
             else:
                 updated.append(f"FROM {new_image}")
 
             # =========================
-            # 🔥 OS PATCH PER STAGE
+            # OS PATCH
             # =========================
             if not stage_has_patch:
                 print("[PATCH][DOCKER] Adding OS security patch (per stage)")
@@ -221,7 +203,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
             continue
 
         # =========================
-        # NON-ROOT USER
+        # NON ROOT
         # =========================
         if stripped.startswith("CMD") or stripped.startswith("ENTRYPOINT"):
 
@@ -238,18 +220,6 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
                 has_user = True
 
             updated.append(line)
-            continue
-
-        # =========================
-        # INSTALL OPTIMIZATION
-        # =========================
-        if "apt-get install" in line and "--no-install-recommends" not in line:
-            fixed = line.replace(
-                "apt-get install",
-                "apt-get install -y --no-install-recommends"
-            )
-            print("[PATCH][DOCKER] Optimized apt install")
-            updated.append(fixed)
             continue
 
         updated.append(line)

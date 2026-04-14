@@ -23,92 +23,10 @@ def extract_base_image(dockerfile):
     try:
         with open(dockerfile) as f:
             for line in f:
-                line = line.strip()
-                if line.upper().startswith("FROM"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        return parts[1].strip()
+                if line.strip().upper().startswith("FROM"):
+                    return line.split()[1].strip()
     except Exception as e:
         print(f"[ERROR] Failed reading Dockerfile: {e}")
-    return None
-
-
-# =========================
-# 🔥 Validate Docker Image
-# =========================
-def validate_image(image):
-    try:
-        result = subprocess.run(
-            ["docker", "manifest", "inspect", image],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=15
-        )
-        return result.returncode == 0
-    except:
-        return False
-
-
-# =========================
-# 🔥 Generate Candidates (FIXED)
-# =========================
-def generate_image_candidates(name, tag):
-    candidates = set()
-
-    # Always include original
-    candidates.add(f"{name}:{tag}")
-
-    # Remove suffix
-    base_tag = re.sub(r"-(slim|alpine|jdk|jre)$", "", tag)
-
-    candidates.add(f"{name}:{base_tag}")
-
-    if not tag.endswith("slim"):
-        candidates.add(f"{name}:{base_tag}-slim")
-
-    if not tag.endswith("alpine"):
-        candidates.add(f"{name}:{base_tag}-alpine")
-
-    candidates.add(f"{name}:latest")
-    candidates.add(name)
-
-    return sorted(candidates)
-
-
-# =========================
-# 🔥 Resolve Valid Image (FIXED)
-# =========================
-def get_valid_image(base_image):
-
-    if not base_image:
-        return None
-
-    if ":" in base_image:
-        name, tag = base_image.split(":", 1)
-    else:
-        name, tag = base_image, "latest"
-
-    # 🔥 SAFE GENERATION
-    try:
-        candidates = generate_image_candidates(name, tag)
-    except Exception as e:
-        print("[CANDIDATE ERROR]", e)
-        candidates = []
-
-    # 🔥 SAFETY FALLBACK
-    if not candidates:
-        print(f"[WARN] No candidates generated for {base_image}, using original")
-        candidates = [base_image]
-
-    print(f"[DEBUG] Image candidates: {candidates}")
-
-    for img in candidates:
-        print(f"[TRY] {img}")
-        if validate_image(img):
-            print(f"[IMAGE] Using: {img}")
-            return img
-
-    print(f"[INFO] Using fallback/AI resolution for base: {base_image}")
     return None
 
 
@@ -116,7 +34,6 @@ def get_valid_image(base_image):
 # 🔥 Deduplicate issues
 # =========================
 def deduplicate_issues(issues):
-
     seen = set()
     unique = []
 
@@ -127,10 +44,8 @@ def deduplicate_issues(issues):
             i.get("target"),
             i.get("source")
         )
-
         if key in seen:
             continue
-
         seen.add(key)
         unique.append(i)
 
@@ -143,18 +58,15 @@ def deduplicate_issues(issues):
 def normalize_fix_versions(fix):
     if not fix:
         return []
-
     if isinstance(fix, list):
         return fix
-
     return [v.strip() for v in str(fix).split(",") if v.strip()]
 
 
 # =========================
-# 🔥 Add priority + confidence
+# 🔥 Enrich Issue
 # =========================
 def enrich_issue(issue):
-
     severity = issue.get("severity", "LOW")
 
     priority_map = {
@@ -165,7 +77,6 @@ def enrich_issue(issue):
     }
 
     issue["priority"] = priority_map.get(severity, 0)
-
     issue["fixed_versions"] = normalize_fix_versions(issue.get("fix"))
 
     if issue["fixed_versions"]:
@@ -188,7 +99,7 @@ async def run(repo_path):
     print(f"[SCAN] Starting scan for: {repo_path}")
 
     # =========================
-    # 🔥 FILESYSTEM SCAN
+    # 🔥 FIXED: FILESYSTEM SCAN
     # =========================
     fs = subprocess.run(
         [
@@ -205,12 +116,12 @@ async def run(repo_path):
     try:
         data = json.loads(fs.stdout or "{}")
     except:
-        print("[ERROR] Failed parsing FS scan output")
+        print("[ERROR] Failed parsing FS scan")
         data = {}
 
     for r in data.get("Results", []):
         for v in r.get("Vulnerabilities", []):
-            issue = {
+            issues.append(enrich_issue({
                 "id": v.get("VulnerabilityID"),
                 "severity": v.get("Severity"),
                 "package": v.get("PkgName"),
@@ -218,14 +129,12 @@ async def run(repo_path):
                 "installed_version": v.get("InstalledVersion"),
                 "target": r.get("Target"),
                 "source": "fs"
-            }
-
-            issues.append(enrich_issue(issue))
+            }))
 
     print(f"[DEBUG] FS findings: {len(issues)}")
 
     # =========================
-    # 🐳 DOCKER IMAGE SCAN
+    # 🐳 DOCKER BUILD + SCAN
     # =========================
     dockerfiles = find_dockerfiles(repo_path)
 
@@ -236,33 +145,35 @@ async def run(repo_path):
         print(f"[SCAN] Processing Dockerfile: {dockerfile}")
 
         base_image = extract_base_image(dockerfile)
-
-        if not base_image:
-            print("[WARN] No base image found")
-            continue
-
         print(f"[SCAN] Base image: {base_image}")
 
-        valid_image = get_valid_image(base_image)
+        # 🔥 BUILD IMAGE
+        image_tag = f"scan-temp:{abs(hash(dockerfile))}"
 
-        if not valid_image:
-            issues.append(enrich_issue({
-                "id": "IMAGE_NOT_FOUND",
-                "severity": "LOW",
-                "package": base_image,
-                "fix": "Use supported base image",
-                "target": dockerfile,
-                "source": "docker"
-            }))
+        print(f"[DOCKER] Building image: {image_tag}")
+
+        build = subprocess.run(
+            ["docker", "build", "-t", image_tag, "-f", dockerfile, repo_path],
+            capture_output=True,
+            text=True
+        )
+
+        if build.returncode != 0:
+            print("[ERROR] Docker build failed")
+            print(build.stderr)
             continue
 
+        # 🔥 SCAN BUILT IMAGE
         img = subprocess.run(
             [
                 "trivy",
                 "image",
                 "--scanners", "vuln",
+                "--vuln-type", "os,library",
+                "--severity", "CRITICAL,HIGH",
+                 "--ignore-unfixed",
                 "--format", "json",
-                valid_image
+                image_tag
             ],
             capture_output=True,
             text=True
@@ -276,18 +187,15 @@ async def run(repo_path):
 
         for r in img_data.get("Results", []):
             for v in r.get("Vulnerabilities", []):
-
-                issue = {
+                issues.append(enrich_issue({
                     "id": v.get("VulnerabilityID"),
                     "severity": v.get("Severity"),
                     "package": v.get("PkgName"),
                     "fix": v.get("FixedVersion"),
                     "installed_version": v.get("InstalledVersion"),
                     "target": dockerfile,
-                    "source": f"image:{valid_image}"
-                }
-
-                issues.append(enrich_issue(issue))
+                    "source": f"image:{image_tag}"
+                }))
 
     issues = deduplicate_issues(issues)
     issues.sort(key=lambda x: x.get("priority", 0), reverse=True)
