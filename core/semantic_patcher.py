@@ -10,13 +10,13 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
     - CVE-aware
     - Safe (no breaking upgrades)
     - Dynamic fallback (existing logic)
+    - 🔥 Improved OS patching (multi-stage safe)
     """
 
     lines = content.split("\n")
     updated = []
 
     has_user = any("USER" in l for l in lines)
-    has_os_patch = any("apt-get upgrade" in l or "apk upgrade" in l for l in lines)
 
     workdir = None
 
@@ -30,7 +30,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
                 workdir = parts[1]
 
     # =========================
-    # 🔥 EXISTING FALLBACK LOGIC (UNCHANGED)
+    # EXISTING FALLBACK LOGIC
     # =========================
     def get_smart_tag(name, tag):
 
@@ -61,7 +61,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
         return tag
 
     # =========================
-    # 🔥 SAFE VERSION CHECK
+    # SAFE VERSION CHECK
     # =========================
     def extract_major(version):
         try:
@@ -69,7 +69,6 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
             return int(match.group()) if match else None
         except:
             return None
-
 
     def is_major_upgrade(old_tag, new_tag):
         try:
@@ -83,6 +82,24 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
         except:
             return False
 
+    # =========================
+    # CVE CHECK
+    # =========================
+    def has_critical_cve(issues, image_name):
+        try:
+            for issue in issues or []:
+                pkg = issue.get("package", "").lower()
+                severity = issue.get("severity", "").upper()
+
+                if image_name.lower() in pkg and severity == "CRITICAL":
+                    return True
+            return False
+        except:
+            return False
+
+    # 🔥 NEW: Track OS patch per stage
+    stage_has_patch = False
+
     for line in lines:
 
         stripped = line.strip()
@@ -91,6 +108,9 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
         # 🐳 HANDLE FROM LINE
         # =========================
         if stripped.upper().startswith("FROM"):
+
+            # 🔥 Reset per stage
+            stage_has_patch = False
 
             parts = stripped.split()
 
@@ -108,7 +128,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
             ai_result = None
 
             # =========================
-            # 🔥 AI FIRST
+            # AI FIRST
             # =========================
             try:
                 ai_result = suggest_docker_fix(image, issues)
@@ -125,9 +145,15 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
 
                             _, new_tag = recommended.split(":", 1)
 
-                            # 🔥 BLOCK BREAKING CHANGE
                             if is_major_upgrade(tag, new_tag):
-                                print(f"[AI BLOCKED] Major upgrade skipped: {image} → {recommended}")
+
+                                if has_critical_cve(issues, name):
+                                    print(f"[AI OVERRIDE] Allowing major upgrade due to CRITICAL CVE: {image} → {recommended}")
+                                    new_image = recommended
+                                    changed = True
+                                else:
+                                    print(f"[AI BLOCKED] Major upgrade skipped: {image} → {recommended}")
+
                             else:
                                 new_image = recommended
                                 changed = True
@@ -136,7 +162,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
                 print("[AI ERROR]", e)
 
             # =========================
-            # 🔥 FALLBACK (UNCHANGED)
+            # FALLBACK
             # =========================
             if not changed:
 
@@ -156,48 +182,42 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None):
                 new_image = f"{name}:{new_tag}"
 
             # =========================
-            # APPLY CHANGE
+            # APPLY IMAGE CHANGE
             # =========================
-            if new_image.strip() == image.strip():
-                updated.append(line)
-                continue
+            if new_image.strip() != image.strip():
+                print(f"[PATCH][DOCKER] {image} → {new_image}")
 
-            print(f"[PATCH][DOCKER] {image} → {new_image}")
+                if patch_log is not None and ai_result:
+                    try:
+                        patch_log.append(
+                            f"Docker: {image} → {new_image} | "
+                            f"Risk: {ai_result.get('risk')} | "
+                            f"Confidence: {ai_result.get('confidence')}%"
+                        )
+                    except:
+                        pass
 
-            # 🔥 ADD PATCH LOG (NEW)
-            if patch_log is not None and ai_result:
-                try:
-                    patch_log.append(
-                        f"Docker: {image} → {new_image} | "
-                        f"Risk: {ai_result.get('risk')} | "
-                        f"Confidence: {ai_result.get('confidence')}%"
-                    )
-                except:
-                    pass
-
+            # ADD FROM
             if alias:
                 updated.append(f"FROM {new_image} AS {alias}")
             else:
                 updated.append(f"FROM {new_image}")
 
-            continue
+            # =========================
+            # 🔥 OS PATCH PER STAGE
+            # =========================
+            if not stage_has_patch:
+                print("[PATCH][DOCKER] Adding OS security patch (per stage)")
 
-        # =========================
-        # OS PATCHING
-        # =========================
-        if stripped.startswith("WORKDIR") and not has_os_patch:
+                if "alpine" in new_image:
+                    updated.append("RUN apk update && apk upgrade")
+                else:
+                    updated.append(
+                        "RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*"
+                    )
 
-            print("[PATCH][DOCKER] Adding OS security patch")
+                stage_has_patch = True
 
-            if "alpine" in content:
-                updated.append("RUN apk update && apk upgrade")
-            else:
-                updated.append(
-                    "RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*"
-                )
-
-            has_os_patch = True
-            updated.append(line)
             continue
 
         # =========================

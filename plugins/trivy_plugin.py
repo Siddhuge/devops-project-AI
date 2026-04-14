@@ -1,6 +1,7 @@
 import subprocess
 import json
 import os
+import re
 
 
 # =========================
@@ -33,7 +34,7 @@ def extract_base_image(dockerfile):
 
 
 # =========================
-# 🔥 Validate Docker Image (IMPROVED)
+# 🔥 Validate Docker Image
 # =========================
 def validate_image(image):
     try:
@@ -49,7 +50,33 @@ def validate_image(image):
 
 
 # =========================
-# 🔥 Dynamic Image Resolver (FIXED)
+# 🔥 Generate Candidates (FIXED)
+# =========================
+def generate_image_candidates(name, tag):
+    candidates = set()
+
+    # Always include original
+    candidates.add(f"{name}:{tag}")
+
+    # Remove suffix
+    base_tag = re.sub(r"-(slim|alpine|jdk|jre)$", "", tag)
+
+    candidates.add(f"{name}:{base_tag}")
+
+    if not tag.endswith("slim"):
+        candidates.add(f"{name}:{base_tag}-slim")
+
+    if not tag.endswith("alpine"):
+        candidates.add(f"{name}:{base_tag}-alpine")
+
+    candidates.add(f"{name}:latest")
+    candidates.add(name)
+
+    return sorted(candidates)
+
+
+# =========================
+# 🔥 Resolve Valid Image (FIXED)
 # =========================
 def get_valid_image(base_image):
 
@@ -61,18 +88,17 @@ def get_valid_image(base_image):
     else:
         name, tag = base_image, "latest"
 
-    candidates = [
-        base_image,
-        f"{name}:{tag}-slim",
-        f"{name}:{tag}-alpine",
-        f"{name}:{tag}-jdk",
-        f"{name}:{tag}-jre",
-        f"{name}:latest",
-        name
-    ]
+    # 🔥 SAFE GENERATION
+    try:
+        candidates = generate_image_candidates(name, tag)
+    except Exception as e:
+        print("[CANDIDATE ERROR]", e)
+        candidates = []
 
-    # remove duplicates safely
-    candidates = list(dict.fromkeys(candidates))
+    # 🔥 SAFETY FALLBACK
+    if not candidates:
+        print(f"[WARN] No candidates generated for {base_image}, using original")
+        candidates = [base_image]
 
     print(f"[DEBUG] Image candidates: {candidates}")
 
@@ -87,7 +113,7 @@ def get_valid_image(base_image):
 
 
 # =========================
-# 🔥 Deduplicate issues (FIXED STRONGER)
+# 🔥 Deduplicate issues
 # =========================
 def deduplicate_issues(issues):
 
@@ -99,7 +125,7 @@ def deduplicate_issues(issues):
             i.get("id"),
             i.get("package"),
             i.get("target"),
-            i.get("source")   # 🔥 FIX: avoid collapsing FS + image issues
+            i.get("source")
         )
 
         if key in seen:
@@ -112,7 +138,7 @@ def deduplicate_issues(issues):
 
 
 # =========================
-# 🔥 Normalize Fix Versions (NEW)
+# 🔥 Normalize Fix Versions
 # =========================
 def normalize_fix_versions(fix):
     if not fix:
@@ -140,10 +166,8 @@ def enrich_issue(issue):
 
     issue["priority"] = priority_map.get(severity, 0)
 
-    # 🔥 Normalize fix versions (IMPORTANT for patcher)
     issue["fixed_versions"] = normalize_fix_versions(issue.get("fix"))
 
-    # 🔥 Confidence logic improved
     if issue["fixed_versions"]:
         issue["confidence"] = 95
     elif issue.get("fix"):
@@ -265,12 +289,7 @@ async def run(repo_path):
 
                 issues.append(enrich_issue(issue))
 
-    # =========================
-    # 🔥 FINAL CLEANUP
-    # =========================
     issues = deduplicate_issues(issues)
-
-    # 🔥 Sort by priority
     issues.sort(key=lambda x: x.get("priority", 0), reverse=True)
 
     print(f"[FINAL] Total findings: {len(issues)}")
