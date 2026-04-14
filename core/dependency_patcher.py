@@ -111,9 +111,15 @@ def get_ai_version(pkg, current, fixes, issue):
         if not ai_result:
             return None, None
 
+        confidence = ai_result.get("confidence", 0)
+
+        # 🔥 NEW: CONFIDENCE FILTER
+        if confidence < 70:
+            print(f"[AI SKIPPED] Low confidence ({confidence}%) for {pkg}")
+            return None, None
+
         new_version = ai_result.get("recommended_version")
 
-        # 🔥 SAFETY CHECK
         if not new_version:
             return None, None
 
@@ -126,7 +132,6 @@ def get_ai_version(pkg, current, fixes, issue):
         print("[AI ERROR]", e)
         return None, None
 
-
 # =========================
 # REASON GENERATOR
 # =========================
@@ -134,11 +139,11 @@ def generate_reason(pkg, old, new, issue=None, ai_result=None):
 
     if ai_result:
         return (
-            f"{pkg}: {old} → {new} | "
-            f"Risk: {ai_result.get('risk')} | "
-            f"Confidence: {ai_result.get('confidence')} | "
-            f"{ai_result.get('reason')}"
-        )
+    f"{pkg}: {old} → {new} | "
+    f"Risk: {ai_result.get('risk')} | "
+    f"Confidence: {ai_result.get('confidence')}% | "
+    f"Reason: {ai_result.get('reason')}"
+   )
 
     risk = calculate_risk(old, new)
     confidence = calculate_confidence(issue) if issue else 0

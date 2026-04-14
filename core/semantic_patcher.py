@@ -93,13 +93,18 @@ def semantic_patch_dockerfile(content, issues=None):
                 ai_result = suggest_docker_fix(image, issues)
 
                 if ai_result:
-                    recommended = ai_result.get("recommended_image")
+                    confidence = ai_result.get("confidence", 0)
 
-                    # 🔥 SAFETY CHECK
-                    if recommended and ":" in recommended and recommended != image:
-                        print(f"[AI][DOCKER] {image} → {recommended}")
-                        new_image = recommended
-                        changed = True
+                    # 🔥 NEW FILTER
+                    if confidence < 70:
+                        print(f"[AI DOCKER SKIPPED] Low confidence ({confidence}%) for {image}")
+                    else:
+                        recommended = ai_result.get("recommended_image")
+
+                        if recommended and ":" in recommended and recommended != image:
+                            print(f"[AI][DOCKER] {image} → {recommended}")
+                            new_image = recommended
+                            changed = True
 
             except Exception as e:
                 print("[AI ERROR]", e)
