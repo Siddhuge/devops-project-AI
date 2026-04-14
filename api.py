@@ -176,17 +176,23 @@ async def preview_fix(payload: dict):
 
             updated = original
 
+            # 🔥 Dependency Fix (AI-enabled)
             if f in ["requirements.txt", "package.json", "pom.xml"]:
                 result = patch_dependency_file(path, issues)
 
                 if isinstance(result, tuple):
                     updated, log = result
-                    patch_log.extend(log)
+                    if log:
+                        patch_log.extend(log)
                 else:
                     updated = result
 
+            # 🔥 Docker Fix (AI-enabled)
             elif f.lower() == "dockerfile":
                 updated = semantic_patch_dockerfile(original, issues)
+
+                if original.strip() != updated.strip():
+                    patch_log.append("Dockerfile hardened using AI + security best practices")
 
             if original.strip() == updated.strip():
                 continue
@@ -270,7 +276,7 @@ async def create_pr_api(payload: dict):
         pr_number = pr.get("number")
 
         pr_repo_map[pr_number] = repo
-        processed_prs.discard(pr_number)  # 🔥 reset safeguard
+        processed_prs.discard(pr_number)
 
         last_pr_number = pr_number
 
@@ -315,7 +321,6 @@ async def check_pr_merged(pr_number: int):
             repo_data.pop(repo, None)
             preview_cache.pop(repo, None)
 
-            # 🔥 NON-BLOCKING SCAN
             asyncio.create_task(scan_repo({"repo": repo}))
 
             revalidated = True
