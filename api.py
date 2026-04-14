@@ -189,7 +189,7 @@ async def preview_fix(payload: dict):
 
             # 🔥 Docker Fix (AI-enabled)
             elif f.lower() == "dockerfile":
-                updated = semantic_patch_dockerfile(original, issues)
+                updated = semantic_patch_dockerfile(original, issues, patch_log)
 
                 if original.strip() != updated.strip():
                     patch_log.append("Dockerfile hardened using AI + security best practices")

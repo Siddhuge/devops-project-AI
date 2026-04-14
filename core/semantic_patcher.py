@@ -1,18 +1,15 @@
 import re
-from core.ai_fix_engine import suggest_docker_fix  # 🔥 NEW
+from core.ai_fix_engine import suggest_docker_fix
 
 
-def semantic_patch_dockerfile(content, issues=None):
+def semantic_patch_dockerfile(content, issues=None, patch_log=None):
     """
     🔥 Enterprise-grade Dockerfile patcher (AI + Rule Hybrid)
 
     - AI-driven base image upgrade
     - CVE-aware
+    - Safe (no breaking upgrades)
     - Dynamic fallback (existing logic)
-    - OS-level CVE patching
-    - Multi-stage safe
-    - Idempotent
-    - Non-root hardened
     """
 
     lines = content.split("\n")
@@ -63,6 +60,29 @@ def semantic_patch_dockerfile(content, issues=None):
 
         return tag
 
+    # =========================
+    # 🔥 SAFE VERSION CHECK
+    # =========================
+    def extract_major(version):
+        try:
+            match = re.search(r"\d+", version)
+            return int(match.group()) if match else None
+        except:
+            return None
+
+
+    def is_major_upgrade(old_tag, new_tag):
+        try:
+            old_major = extract_major(old_tag)
+            new_major = extract_major(new_tag)
+
+            if old_major is None or new_major is None:
+                return False
+
+            return new_major > old_major
+        except:
+            return False
+
     for line in lines:
 
         stripped = line.strip()
@@ -85,9 +105,10 @@ def semantic_patch_dockerfile(content, issues=None):
 
             new_image = image
             changed = False
+            ai_result = None
 
             # =========================
-            # 🔥 AI FIRST (NEW)
+            # 🔥 AI FIRST
             # =========================
             try:
                 ai_result = suggest_docker_fix(image, issues)
@@ -95,28 +116,32 @@ def semantic_patch_dockerfile(content, issues=None):
                 if ai_result:
                     confidence = ai_result.get("confidence", 0)
 
-                    # 🔥 NEW FILTER
                     if confidence < 70:
-                        print(f"[AI DOCKER SKIPPED] Low confidence ({confidence}%) for {image}")
+                        print(f"[AI SKIPPED] Low confidence ({confidence}%) for {image}")
                     else:
                         recommended = ai_result.get("recommended_image")
 
                         if recommended and ":" in recommended and recommended != image:
-                            print(f"[AI][DOCKER] {image} → {recommended}")
-                            new_image = recommended
-                            changed = True
+
+                            _, new_tag = recommended.split(":", 1)
+
+                            # 🔥 BLOCK BREAKING CHANGE
+                            if is_major_upgrade(tag, new_tag):
+                                print(f"[AI BLOCKED] Major upgrade skipped: {image} → {recommended}")
+                            else:
+                                new_image = recommended
+                                changed = True
 
             except Exception as e:
                 print("[AI ERROR]", e)
 
             # =========================
-            # 🔥 FALLBACK (EXISTING LOGIC)
+            # 🔥 FALLBACK (UNCHANGED)
             # =========================
             if not changed:
 
                 new_tag = tag
 
-                # CVE-aware check (existing)
                 if issues:
                     for issue in issues:
                         if issue.get("package") == name and issue.get("fixed_versions"):
@@ -133,11 +158,22 @@ def semantic_patch_dockerfile(content, issues=None):
             # =========================
             # APPLY CHANGE
             # =========================
-            if new_image == image:
+            if new_image.strip() == image.strip():
                 updated.append(line)
                 continue
 
             print(f"[PATCH][DOCKER] {image} → {new_image}")
+
+            # 🔥 ADD PATCH LOG (NEW)
+            if patch_log is not None and ai_result:
+                try:
+                    patch_log.append(
+                        f"Docker: {image} → {new_image} | "
+                        f"Risk: {ai_result.get('risk')} | "
+                        f"Confidence: {ai_result.get('confidence')}%"
+                    )
+                except:
+                    pass
 
             if alias:
                 updated.append(f"FROM {new_image} AS {alias}")
@@ -147,7 +183,7 @@ def semantic_patch_dockerfile(content, issues=None):
             continue
 
         # =========================
-        # 🔥 OS CVE PATCHING (UNCHANGED)
+        # OS PATCHING
         # =========================
         if stripped.startswith("WORKDIR") and not has_os_patch:
 
@@ -165,7 +201,7 @@ def semantic_patch_dockerfile(content, issues=None):
             continue
 
         # =========================
-        # 🔐 NON-ROOT USER (UNCHANGED)
+        # NON-ROOT USER
         # =========================
         if stripped.startswith("CMD") or stripped.startswith("ENTRYPOINT"):
 
@@ -185,7 +221,7 @@ def semantic_patch_dockerfile(content, issues=None):
             continue
 
         # =========================
-        # 📦 INSTALL OPTIMIZATION (UNCHANGED)
+        # INSTALL OPTIMIZATION
         # =========================
         if "apt-get install" in line and "--no-install-recommends" not in line:
             fixed = line.replace(

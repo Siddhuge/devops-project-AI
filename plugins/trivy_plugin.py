@@ -82,7 +82,7 @@ def get_valid_image(base_image):
             print(f"[IMAGE] Using: {img}")
             return img
 
-    print(f"[WARN] No valid image found for base: {base_image}")
+    print(f"[INFO] Using fallback/AI resolution for base: {base_image}")
     return None
 
 
