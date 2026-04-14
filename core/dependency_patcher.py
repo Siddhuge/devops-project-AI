@@ -3,10 +3,11 @@ import re
 import xml.etree.ElementTree as ET
 
 from core.risk_engine import calculate_risk, calculate_confidence
+from core.ai_fix_engine import suggest_fix  # 🔥 NEW
 
 
 # =========================
-# 🔥 VERSION PARSER
+# VERSION HELPERS
 # =========================
 def normalize_version(v):
     return re.sub(r"[^\d\.]", "", v or "")
@@ -26,9 +27,6 @@ def get_major(v):
         return None
 
 
-# =========================
-# 🔥 NEW: FIX DETECTION (CRITICAL)
-# =========================
 def is_already_fixed(current, new):
     try:
         return version_tuple(current) >= version_tuple(new)
@@ -37,7 +35,7 @@ def is_already_fixed(current, new):
 
 
 # =========================
-# 🔥 SMART VERSION PICKER
+# SAFE FALLBACK LOGIC (UNCHANGED)
 # =========================
 def pick_safe_version(current, fixes):
 
@@ -75,7 +73,7 @@ def pick_safe_version(current, fixes):
 
 
 # =========================
-# 🔥 BUILD FIX MAP
+# BUILD FIX MAP
 # =========================
 def build_fix_map(issues):
 
@@ -103,24 +101,53 @@ def build_fix_map(issues):
 
 
 # =========================
-# 🔥 AI REASONING
+# 🔥 AI + FALLBACK VERSION PICKER
 # =========================
-def generate_reason(pkg, old, new, issue=None):
+def get_ai_version(pkg, current, fixes, issue):
 
-    if not old or not new:
-        return ""
+    try:
+        ai_result = suggest_fix(issue)
+
+        if not ai_result:
+            return None, None
+
+        new_version = ai_result.get("recommended_version")
+
+        # 🔥 SAFETY CHECK
+        if not new_version:
+            return None, None
+
+        if is_already_fixed(current, new_version):
+            return None, None
+
+        return new_version, ai_result
+
+    except Exception as e:
+        print("[AI ERROR]", e)
+        return None, None
+
+
+# =========================
+# REASON GENERATOR
+# =========================
+def generate_reason(pkg, old, new, issue=None, ai_result=None):
+
+    if ai_result:
+        return (
+            f"{pkg}: {old} → {new} | "
+            f"Risk: {ai_result.get('risk')} | "
+            f"Confidence: {ai_result.get('confidence')} | "
+            f"{ai_result.get('reason')}"
+        )
 
     risk = calculate_risk(old, new)
-
-    confidence = 0
-    if issue:
-        confidence = calculate_confidence(issue)
+    confidence = calculate_confidence(issue) if issue else 0
 
     return f"{pkg}: {old} → {new} | Risk: {risk} | Confidence: {confidence} | CVE Fix Applied"
 
 
 # =========================
-# 🐍 PYTHON PATCHER
+# PYTHON PATCHER
 # =========================
 def patch_requirements(content, fix_map, issues, patch_log):
 
@@ -142,18 +169,24 @@ def patch_requirements(content, fix_map, issues, patch_log):
         current_version = match.group(3)
 
         if pkg in fix_map:
-            new_version = pick_safe_version(current_version, fix_map[pkg])
 
-            # 🔥 FIX: skip already fixed
+            issue = next((i for i in issues if i.get("package", "").lower() == pkg), None)
+
+            # 🔥 TRY AI FIRST
+            new_version, ai_result = get_ai_version(pkg, current_version, fix_map[pkg], issue)
+
+            # 🔥 FALLBACK
+            if not new_version:
+                new_version = pick_safe_version(current_version, fix_map[pkg])
+                ai_result = None
+
             if not new_version or is_already_fixed(current_version, new_version):
                 updated.append(line)
                 continue
 
             print(f"[PATCH][PY] {pkg} {current_version} → {new_version}")
 
-            issue = next((i for i in issues if i.get("package", "").lower() == pkg), None)
-
-            patch_log.append(generate_reason(pkg, current_version, new_version, issue))
+            patch_log.append(generate_reason(pkg, current_version, new_version, issue, ai_result))
 
             updated.append(f"{pkg}=={new_version}")
         else:
@@ -163,7 +196,7 @@ def patch_requirements(content, fix_map, issues, patch_log):
 
 
 # =========================
-# 🟢 NODE PATCHER
+# NODE PATCHER
 # =========================
 def patch_package_json(content, fix_map, issues, patch_log):
 
@@ -186,16 +219,20 @@ def patch_package_json(content, fix_map, issues, patch_log):
 
             if key in fix_map:
 
-                new_version = pick_safe_version(current_version, fix_map[key])
+                issue = next((i for i in issues if i.get("package", "").lower() == key), None)
+
+                new_version, ai_result = get_ai_version(key, current_version, fix_map[key], issue)
+
+                if not new_version:
+                    new_version = pick_safe_version(current_version, fix_map[key])
+                    ai_result = None
 
                 if not new_version or is_already_fixed(current_version, new_version):
                     continue
 
                 print(f"[PATCH][NODE] {pkg} → {new_version}")
 
-                issue = next((i for i in issues if i.get("package", "").lower() == key), None)
-
-                patch_log.append(generate_reason(pkg, current_version, new_version, issue))
+                patch_log.append(generate_reason(pkg, current_version, new_version, issue, ai_result))
 
                 data[section][pkg] = new_version
                 updated_flag = True
@@ -207,7 +244,7 @@ def patch_package_json(content, fix_map, issues, patch_log):
 
 
 # =========================
-# ☕ MAVEN PATCHER
+# MAVEN PATCHER
 # =========================
 def patch_pom_xml(content, fix_map, issues, patch_log):
 
@@ -236,17 +273,20 @@ def patch_pom_xml(content, fix_map, issues, patch_log):
         if not fixes:
             continue
 
-        new_version = pick_safe_version(current_version, fixes)
+        issue = next((i for i in issues if i.get("package", "").lower() in [full_pkg, short_pkg]), None)
 
-        # 🔥 FIX HERE
+        new_version, ai_result = get_ai_version(full_pkg, current_version, fixes, issue)
+
+        if not new_version:
+            new_version = pick_safe_version(current_version, fixes)
+            ai_result = None
+
         if not new_version or is_already_fixed(current_version, new_version):
             continue
 
         print(f"[PATCH][MAVEN] {full_pkg} {current_version} → {new_version}")
 
-        issue = next((i for i in issues if i.get("package", "").lower() in [full_pkg, short_pkg]), None)
-
-        patch_log.append(generate_reason(full_pkg, current_version, new_version, issue))
+        patch_log.append(generate_reason(full_pkg, current_version, new_version, issue, ai_result))
 
         version.text = new_version
         updated_flag = True
@@ -258,7 +298,7 @@ def patch_pom_xml(content, fix_map, issues, patch_log):
 
 
 # =========================
-# 🚀 MAIN ENTRY
+# MAIN ENTRY
 # =========================
 def patch_dependency_file(file_path, issues):
 

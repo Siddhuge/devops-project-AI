@@ -1,12 +1,14 @@
 import re
+from core.ai_fix_engine import suggest_docker_fix  # 🔥 NEW
 
 
 def semantic_patch_dockerfile(content, issues=None):
     """
-    🔥 Enterprise-grade Dockerfile patcher (Improved)
+    🔥 Enterprise-grade Dockerfile patcher (AI + Rule Hybrid)
 
-    - CVE-aware (uses issues if available)
-    - Dynamic base image upgrades (NO hardcoding)
+    - AI-driven base image upgrade
+    - CVE-aware
+    - Dynamic fallback (existing logic)
     - OS-level CVE patching
     - Multi-stage safe
     - Idempotent
@@ -22,7 +24,7 @@ def semantic_patch_dockerfile(content, issues=None):
     workdir = None
 
     # =========================
-    # 🔍 Detect WORKDIR
+    # Detect WORKDIR
     # =========================
     for l in lines:
         if l.strip().startswith("WORKDIR"):
@@ -31,11 +33,10 @@ def semantic_patch_dockerfile(content, issues=None):
                 workdir = parts[1]
 
     # =========================
-    # 🔥 DYNAMIC VERSION INTELLIGENCE
+    # 🔥 EXISTING FALLBACK LOGIC (UNCHANGED)
     # =========================
     def get_smart_tag(name, tag):
 
-        # Extract numeric version
         match = re.search(r"\d+(\.\d+)?", tag)
         version = float(match.group()) if match else None
 
@@ -45,22 +46,18 @@ def semantic_patch_dockerfile(content, issues=None):
         elif "alpine" in tag:
             suffix = "-alpine"
 
-        # 🐍 Python
         if "python" in name and version:
             if version < 3.8:
                 return f"3.11{suffix or '-slim'}"
 
-        # 🟢 Node
         if "node" in name and version:
             if version < 16:
                 return f"18{suffix or '-slim'}"
 
-        # ☕ Java
         if ("openjdk" in name or "jdk" in name) and version:
             if version < 11:
                 return "17-jre"
 
-        # Generic fallback
         if not suffix:
             return f"{tag}-slim"
 
@@ -86,45 +83,66 @@ def semantic_patch_dockerfile(content, issues=None):
             if ":" in image:
                 name, tag = image.split(":", 1)
 
-            new_tag = tag
+            new_image = image
             changed = False
 
             # =========================
-            # 🔥 CVE-AWARE CHECK
+            # 🔥 AI FIRST (NEW)
             # =========================
-            if issues:
-                for issue in issues:
-                    if issue.get("package") == name and issue.get("fixed_versions"):
-                        new_tag = tag if "slim" in tag or "alpine" in tag else f"{tag}-slim"
+            try:
+                ai_result = suggest_docker_fix(image, issues)
+
+                if ai_result:
+                    recommended = ai_result.get("recommended_image")
+
+                    # 🔥 SAFETY CHECK
+                    if recommended and ":" in recommended and recommended != image:
+                        print(f"[AI][DOCKER] {image} → {recommended}")
+                        new_image = recommended
                         changed = True
-                        break
+
+            except Exception as e:
+                print("[AI ERROR]", e)
 
             # =========================
-            # 🔥 DYNAMIC VERSION FIX (NEW)
+            # 🔥 FALLBACK (EXISTING LOGIC)
             # =========================
-            smart_tag = get_smart_tag(name, tag)
+            if not changed:
 
-            if smart_tag and smart_tag != tag:
-                new_tag = smart_tag
-                changed = True
+                new_tag = tag
 
-            fixed_image = f"{name}:{new_tag}"
+                # CVE-aware check (existing)
+                if issues:
+                    for issue in issues:
+                        if issue.get("package") == name and issue.get("fixed_versions"):
+                            new_tag = tag if "slim" in tag or "alpine" in tag else f"{tag}-slim"
+                            break
 
-            if fixed_image == image:
+                smart_tag = get_smart_tag(name, tag)
+
+                if smart_tag and smart_tag != tag:
+                    new_tag = smart_tag
+
+                new_image = f"{name}:{new_tag}"
+
+            # =========================
+            # APPLY CHANGE
+            # =========================
+            if new_image == image:
                 updated.append(line)
                 continue
 
-            print(f"[PATCH][DOCKER] {image} → {fixed_image}")
+            print(f"[PATCH][DOCKER] {image} → {new_image}")
 
             if alias:
-                updated.append(f"FROM {fixed_image} AS {alias}")
+                updated.append(f"FROM {new_image} AS {alias}")
             else:
-                updated.append(f"FROM {fixed_image}")
+                updated.append(f"FROM {new_image}")
 
             continue
 
         # =========================
-        # 🔥 OS CVE PATCHING (NEW)
+        # 🔥 OS CVE PATCHING (UNCHANGED)
         # =========================
         if stripped.startswith("WORKDIR") and not has_os_patch:
 
@@ -142,7 +160,7 @@ def semantic_patch_dockerfile(content, issues=None):
             continue
 
         # =========================
-        # 🔐 ADD SECURITY BEST PRACTICES
+        # 🔐 NON-ROOT USER (UNCHANGED)
         # =========================
         if stripped.startswith("CMD") or stripped.startswith("ENTRYPOINT"):
 
@@ -162,7 +180,7 @@ def semantic_patch_dockerfile(content, issues=None):
             continue
 
         # =========================
-        # 📦 OPTIMIZE INSTALL COMMANDS
+        # 📦 INSTALL OPTIMIZATION (UNCHANGED)
         # =========================
         if "apt-get install" in line and "--no-install-recommends" not in line:
             fixed = line.replace(
