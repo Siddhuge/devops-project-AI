@@ -1,4 +1,5 @@
 import re
+import os
 from core.ai_fix_engine import suggest_docker_fix
 
 
@@ -17,19 +18,32 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
                 workdir = parts[1]
 
     # =========================
-    # 🔥 FILTER ISSUES PER DOCKERFILE (CRITICAL FIX)
+    # 🔥 IMPROVED ISSUE FILTER (FIXED)
     # =========================
     def filter_issues_for_image(all_issues, dockerfile_path):
         try:
-            return [
-                i for i in all_issues or []
-                if dockerfile_path and dockerfile_path in str(i.get("target", ""))
-            ]
-        except:
+            if not all_issues:
+                return []
+
+            filtered = []
+
+            for i in all_issues:
+                target = str(i.get("target", "")).lower()
+
+                # 🔥 FULL PATH MATCH (not filename)
+                if dockerfile_path and dockerfile_path.lower() in target:
+                    filtered.append(i)
+
+            print(f"[DEBUG] Matched {len(filtered)} issues for {dockerfile_path}")
+
+            return filtered
+
+        except Exception as e:
+            print("[FILTER ERROR]", e)
             return []
 
     # =========================
-    # 🔥 ENTERPRISE CVE MATCHING
+    # 🔥 ENTERPRISE CVE MATCHING (IMPROVED)
     # =========================
     def has_relevant_critical_cve(image_issues, image_name):
         try:
@@ -38,13 +52,11 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
 
             image_name = image_name.lower()
 
-            # 🔥 OS-level packages
             os_packages = [
                 "openssl", "glibc", "musl", "libssl", "busybox",
                 "bash", "zlib", "curl", "wget", "tar"
             ]
 
-            # 🔥 Language ecosystems
             ecosystem_map = {
                 "node": ["node", "npm", "lodash", "express"],
                 "python": ["python", "pip", "django", "flask"],
@@ -60,14 +72,18 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
                 if key in image_name:
                     relevant_keywords.extend(values)
 
+            print(f"[DEBUG] Checking CVEs for {image_name}")
+
             for issue in image_issues:
                 severity = issue.get("severity", "").upper()
                 pkg = (issue.get("package") or "").lower()
 
-                if severity != "CRITICAL":
+                print(" →", severity, pkg)
+
+                # 🔥 FIX: allow HIGH also
+                if severity not in ["CRITICAL", "HIGH"]:
                     continue
 
-                # 🔥 Strong match
                 if any(k in pkg for k in relevant_keywords):
                     print(f"[CVE MATCH] {pkg} is relevant to {image_name}")
                     return True
@@ -102,7 +118,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
 
     stage_has_patch = False
 
-    # 🔥 FILTERED ISSUES (IMPORTANT)
+    # 🔥 FILTER ISSUES CORRECTLY
     image_issues = filter_issues_for_image(issues, dockerfile_path)
 
     for line in lines:
@@ -128,9 +144,6 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
             changed = False
             ai_result = None
 
-            # =========================
-            # AI LOGIC
-            # =========================
             try:
                 ai_result = suggest_docker_fix(image, image_issues)
 
@@ -148,7 +161,6 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
 
                             if is_major_upgrade(tag, new_tag):
 
-                                # 🔥 FIXED LOGIC
                                 if has_relevant_critical_cve(image_issues, name):
                                     print(f"[AI OVERRIDE] Critical CVE matched → allowing upgrade: {image} → {recommended}")
                                     new_image = recommended
@@ -163,9 +175,6 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
             except Exception as e:
                 print("[AI ERROR]", e)
 
-            # =========================
-            # FALLBACK
-            # =========================
             if not changed:
                 if "slim" not in tag and "alpine" not in tag:
                     new_image = f"{name}:{tag}-slim"
@@ -185,9 +194,6 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
             else:
                 updated.append(f"FROM {new_image}")
 
-            # =========================
-            # OS PATCH
-            # =========================
             if not stage_has_patch:
                 print("[PATCH][DOCKER] Adding OS security patch (per stage)")
 
@@ -202,9 +208,6 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
 
             continue
 
-        # =========================
-        # NON ROOT
-        # =========================
         if stripped.startswith("CMD") or stripped.startswith("ENTRYPOINT"):
 
             if not has_user:
