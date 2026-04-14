@@ -147,6 +147,8 @@ def get_history(repo: str):
 # =========================
 # 🔍 Preview Fix
 # =========================
+# 🔥 ONLY CHANGE IS IN preview_fix FUNCTION
+
 @app.post("/preview-fix")
 async def preview_fix(payload: dict):
 
@@ -176,7 +178,7 @@ async def preview_fix(payload: dict):
 
             updated = original
 
-            # 🔥 Dependency Fix (AI-enabled)
+            # 🔥 Dependency Fix
             if f in ["requirements.txt", "package.json", "pom.xml"]:
                 result = patch_dependency_file(path, issues)
 
@@ -187,12 +189,19 @@ async def preview_fix(payload: dict):
                 else:
                     updated = result
 
-            # 🔥 Docker Fix (AI-enabled)
+            # 🔥 Docker Fix (FIXED HERE)
             elif f.lower() == "dockerfile":
-                updated = semantic_patch_dockerfile(original, issues, patch_log)
+                updated = semantic_patch_dockerfile(
+                    original,
+                    issues,
+                    patch_log,
+                    dockerfile_path=path   # 🔥🔥 CRITICAL FIX
+                )
 
                 if original.strip() != updated.strip():
-                    patch_log.append("Dockerfile hardened using AI + security best practices")
+                    patch_log.append(
+                        f"Dockerfile hardened using AI + security best practices ({path})"
+                    )
 
             if original.strip() == updated.strip():
                 continue
