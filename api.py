@@ -19,9 +19,6 @@ from core.explainer import generate_summary
 
 app = FastAPI()
 
-# =========================
-# 🔥 GLOBALS
-# =========================
 processed_prs = set()
 pr_repo_map = {}
 
@@ -31,9 +28,6 @@ preview_cache = {}
 patch_logs = {}
 last_pr_number = None
 
-# =========================
-# CORS
-# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,24 +36,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # =========================
 # 🔥 Repo Sync
 # =========================
 def update_repo(repo_path):
     try:
-        print("[GIT] Fetching latest...")
         subprocess.run(["git", "-C", repo_path, "fetch"], check=True)
-
-        print("[GIT] Resetting to origin/main...")
-        subprocess.run(
-            ["git", "-C", repo_path, "reset", "--hard", "origin/main"],
-            check=True
-        )
-
-        print("[GIT] Repo updated successfully")
-
+        subprocess.run(["git", "-C", repo_path, "reset", "--hard", "origin/main"], check=True)
     except Exception as e:
         print("[GIT ERROR]", e)
+
 
 # =========================
 # Onboard
@@ -71,12 +58,14 @@ async def onboard_repo(payload: dict):
         onboarded_repos.append(repo)
     return {"repos": onboarded_repos}
 
+
 @app.get("/onboarded")
 def get_onboarded():
     return {"repos": onboarded_repos}
 
+
 # =========================
-# 🚀 SCAN
+# 🚀 SCAN (IMPROVED)
 # =========================
 @app.post("/scan")
 async def scan_repo(payload: dict):
@@ -90,7 +79,6 @@ async def scan_repo(payload: dict):
 
         if repo in repo_data and os.path.exists(repo_data[repo]["path"]):
             repo_path = repo_data[repo]["path"]
-            print("[CACHE] Updating repo before scan")
             update_repo(repo_path)
         else:
             repo_path = clone_repo(repo)
@@ -102,25 +90,47 @@ async def scan_repo(payload: dict):
 
         all_issues = deduplicate(results)
 
+        # 🔥 Runtime vs Builder separation
+        runtime_issues = [i for i in all_issues if i.get("stage") == "runtime"]
+        builder_issues = [i for i in all_issues if i.get("stage") != "runtime"]
+
+        # 🔥 Prioritize runtime issues first
+        prioritized = sorted(
+            all_issues,
+            key=lambda x: (x.get("stage") != "runtime", -x.get("priority", 0))
+        )
+
+        # 🔥 Filter top issues
         filtered_issues = [
-            i for i in all_issues
+            i for i in prioritized
             if i.get("severity") in ["HIGH", "CRITICAL"]
         ][:50]
 
         for i in filtered_issues:
             i["confidence"] = calculate_confidence(i, language)
 
+        summary = {
+            "total": len(all_issues),
+            "critical": sum(1 for i in all_issues if i["severity"] == "CRITICAL"),
+            "high": sum(1 for i in all_issues if i["severity"] == "HIGH"),
+            "runtime_critical": sum(
+                1 for i in all_issues
+                if i["severity"] == "CRITICAL" and i.get("stage") == "runtime"
+            )
+        }
+
         snapshot = {
             "time": datetime.now().strftime("%H:%M:%S"),
-            "CRITICAL": len([i for i in filtered_issues if i["severity"] == "CRITICAL"]),
-            "HIGH": len([i for i in filtered_issues if i["severity"] == "HIGH"]),
-            "MEDIUM": len([i for i in filtered_issues if i["severity"] == "MEDIUM"]),
-            "LOW": len([i for i in filtered_issues if i["severity"] == "LOW"]),
+            "CRITICAL": summary["critical"],
+            "HIGH": summary["high"]
         }
 
         repo_data[repo] = {
             "issues": filtered_issues,
             "all_issues": all_issues,
+            "runtime_issues": runtime_issues,
+            "builder_issues": builder_issues,
+            "summary": summary,
             "history": repo_data.get(repo, {}).get("history", []) + [snapshot],
             "path": repo_path
         }
@@ -129,13 +139,14 @@ async def scan_repo(payload: dict):
 
         return {
             "issues": filtered_issues,
-            "total_issues": len(all_issues),
+            "summary": summary,
             "language": language
         }
 
     except Exception as e:
         print("[ERROR]", e)
         return {"error": str(e)}
+
 
 # =========================
 # History
@@ -144,11 +155,10 @@ async def scan_repo(payload: dict):
 def get_history(repo: str):
     return {"history": repo_data.get(repo, {}).get("history", [])}
 
-# =========================
-# 🔍 Preview Fix
-# =========================
-# 🔥 ONLY CHANGE IS IN preview_fix FUNCTION
 
+# =========================
+# 🔍 Preview Fix (MINOR IMPROVE)
+# =========================
 @app.post("/preview-fix")
 async def preview_fix(payload: dict):
 
@@ -178,7 +188,6 @@ async def preview_fix(payload: dict):
 
             updated = original
 
-            # 🔥 Dependency Fix
             if f in ["requirements.txt", "package.json", "pom.xml"]:
                 result = patch_dependency_file(path, issues)
 
@@ -189,19 +198,16 @@ async def preview_fix(payload: dict):
                 else:
                     updated = result
 
-            # 🔥 Docker Fix (FIXED HERE)
             elif f.lower() == "dockerfile":
                 updated = semantic_patch_dockerfile(
                     original,
                     issues,
                     patch_log,
-                    dockerfile_path=path   # 🔥🔥 CRITICAL FIX
+                    dockerfile_path=path
                 )
 
                 if original.strip() != updated.strip():
-                    patch_log.append(
-                        f"Dockerfile hardened using AI + security best practices ({path})"
-                    )
+                    patch_log.append(f"Dockerfile hardened ({path})")
 
             if original.strip() == updated.strip():
                 continue
@@ -234,8 +240,9 @@ async def preview_fix(payload: dict):
         }
     }
 
+
 # =========================
-# 🚀 CREATE PR
+# 🚀 CREATE PR (UNCHANGED)
 # =========================
 @app.post("/create-pr")
 async def create_pr_api(payload: dict):
@@ -300,6 +307,7 @@ async def create_pr_api(payload: dict):
         print("[PR ERROR]", e)
         return {"error": str(e)}
 
+
 # =========================
 # 🔍 CHECK PR MERGED
 # =========================
@@ -311,18 +319,11 @@ async def check_pr_merged(pr_number: int):
     merged = status.get("merged", False)
     state = status.get("state")
 
-    print(f"[PR STATUS] PR={pr_number} merged={merged} state={state}")
-
     revalidated = False
 
     if merged and pr_number not in processed_prs:
 
-        print(f"[AUTO] PR {pr_number} merged → triggering re-scan")
-
         processed_prs.add(pr_number)
-
-        if len(processed_prs) > 100:
-            processed_prs.clear()
 
         if pr_number in pr_repo_map:
             repo = pr_repo_map[pr_number]
@@ -331,16 +332,14 @@ async def check_pr_merged(pr_number: int):
             preview_cache.pop(repo, None)
 
             asyncio.create_task(scan_repo({"repo": repo}))
-
             revalidated = True
-        else:
-            print(f"[WARN] PR {pr_number} not mapped")
 
     return {
         "merged": merged,
         "state": state,
         "revalidated": revalidated
     }
+
 
 # =========================
 # PR STATUS

@@ -18,7 +18,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
                 workdir = parts[1]
 
     # =========================
-    # 🔥 IMPROVED ISSUE FILTER (FIXED)
+    # 🔥 FILTER ISSUES (STRONG)
     # =========================
     def filter_issues_for_image(all_issues, dockerfile_path):
         try:
@@ -26,16 +26,13 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
                 return []
 
             filtered = []
-
             for i in all_issues:
                 target = str(i.get("target", "")).lower()
 
-                # 🔥 FULL PATH MATCH (not filename)
                 if dockerfile_path and dockerfile_path.lower() in target:
                     filtered.append(i)
 
             print(f"[DEBUG] Matched {len(filtered)} issues for {dockerfile_path}")
-
             return filtered
 
         except Exception as e:
@@ -43,40 +40,49 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
             return []
 
     # =========================
-    # 🔥 ENTERPRISE CVE MATCHING (IMPROVED)
+    # 🔥 STAGE DETECTION
+    # =========================
+    def get_stage_type(all_lines, current_index):
+        from_indices = [i for i, l in enumerate(all_lines) if l.strip().upper().startswith("FROM")]
+        return "runtime" if current_index == from_indices[-1] else "builder"
+
+    # =========================
+    # 🔥 SMART RELEVANCE FILTER
+    # =========================
+    def is_relevant_package(image, package):
+        image = image.lower()
+        package = package.lower()
+
+        # Node
+        if "node" in image:
+            return any(x in package for x in ["node", "npm", "lodash", "express"])
+
+        # Python
+        if "python" in image:
+            return any(x in package for x in ["python", "pip", "django", "flask"])
+
+        # Java
+        if any(x in image for x in ["openjdk", "temurin"]):
+            return any(x in package for x in ["spring", "log4j", "jackson", "netty"])
+
+        # Tomcat
+        if "tomcat" in image:
+            return any(x in package for x in ["tomcat", "servlet", "jsp"])
+
+        # OS
+        if any(x in image for x in ["ubuntu", "debian", "alpine"]):
+            return any(x in package for x in ["glibc", "openssl", "bash", "apt"])
+
+        return False
+
+    # =========================
+    # 🔥 CVE MATCHING (FINAL)
     # =========================
     def has_relevant_critical_cve(image_issues, image_name, all_issues=None):
         try:
             if not image_issues:
                 print(f"[FALLBACK] No direct CVEs for {image_name}, checking global issues")
-
-                if all_issues:
-                    image_issues = all_issues
-                else:
-                    return False
-
-            image_name = image_name.lower()
-
-            os_packages = [
-                "openssl", "glibc", "musl", "libssl", "busybox",
-                "bash", "zlib", "curl", "wget", "tar"
-            ]
-
-            ecosystem_map = {
-                "node": ["node", "npm", "lodash", "express"],
-                "python": ["python", "pip", "django", "flask"],
-                "openjdk": ["java", "jdk", "log4j"],
-                "ubuntu": os_packages,
-                "debian": os_packages,
-                "alpine": ["musl", "busybox"] + os_packages,
-                "os": ["dpkg", "apt", "libc", "libssl", "openssl"]
-            }
-
-            relevant_keywords = []
-
-            for key, values in ecosystem_map.items():
-                if key in image_name:
-                    relevant_keywords.extend(values)
+                image_issues = all_issues or []
 
             print(f"[DEBUG] Checking CVEs for {image_name}")
 
@@ -86,28 +92,12 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
 
                 print(" →", severity, pkg)
 
-                # 🔥 FIX: allow HIGH also
-                if severity not in ["CRITICAL", "HIGH"]:
+                if severity != "CRITICAL":
                     continue
 
-                            # 🔥 Only allow OS CVEs for OS images
-                if "ubuntu" in image_name or "debian" in image_name or "alpine" in image_name:
-                    if any(k in pkg for k in relevant_keywords) or "dpkg" in pkg:
-                        return True
-                else:
-                    # 🔥 STRICT language-specific filtering
-                    if "node" in image_name:
-                        if any(k in pkg for k in ["node", "npm", "lodash", "express"]):
-                            print(f"[CVE MATCH] {pkg} is relevant to node")
-                            return True
-
-                    elif "python" in image_name:
-                        if any(k in pkg for k in ["python", "pip", "django", "flask"]):
-                            return True
-
-                    elif "openjdk" in image_name:
-                        if any(k in pkg for k in ["java", "jdk", "log4j"]):
-                            return True
+                if is_relevant_package(image_name, pkg):
+                    print(f"[CVE MATCH] {pkg} is relevant to {image_name}")
+                    return True
 
             return False
 
@@ -137,18 +127,25 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
         except:
             return False
 
-    stage_has_patch = False
-
-    # 🔥 FILTER ISSUES CORRECTLY
+    # =========================
+    # 🔥 FILTER ISSUES
+    # =========================
     image_issues = filter_issues_for_image(issues, dockerfile_path)
 
-    for line in lines:
+    stage_has_patch = False
+
+    for idx, line in enumerate(lines):
 
         stripped = line.strip()
 
+        # =========================
+        # 🔥 HANDLE FROM
+        # =========================
         if stripped.upper().startswith("FROM"):
 
             stage_has_patch = False
+
+            stage = get_stage_type(lines, idx)
 
             parts = stripped.split()
             image = parts[1]
@@ -173,6 +170,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
 
                     if confidence < 70:
                         print(f"[AI SKIPPED] Low confidence ({confidence}%) for {image}")
+
                     else:
                         recommended = ai_result.get("recommended_image")
 
@@ -182,12 +180,15 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
 
                             if is_major_upgrade(tag, new_tag):
 
-                                if has_relevant_critical_cve(image_issues, name, issues):
-                                    print(f"[AI OVERRIDE] Critical CVE matched → allowing upgrade: {image} → {recommended}")
+                                # 🔥 CRITICAL FIX: runtime only
+                                if stage != "runtime":
+                                    print(f"[AI BLOCKED] {image} is builder stage")
+                                elif has_relevant_critical_cve(image_issues, name, issues):
+                                    print(f"[AI OVERRIDE] Runtime critical CVE → allowing upgrade: {image} → {recommended}")
                                     new_image = recommended
                                     changed = True
                                 else:
-                                    print(f"[AI BLOCKED] Major upgrade skipped: {image} → {recommended}")
+                                    print(f"[AI BLOCKED] Upgrade not safe for: {image}")
 
                             else:
                                 new_image = recommended
@@ -196,6 +197,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
             except Exception as e:
                 print("[AI ERROR]", e)
 
+            # fallback slim
             if not changed:
                 if "slim" not in tag and "alpine" not in tag:
                     new_image = f"{name}:{tag}-slim"
@@ -215,6 +217,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
             else:
                 updated.append(f"FROM {new_image}")
 
+            # OS patch
             if not stage_has_patch:
                 print("[PATCH][DOCKER] Adding OS security patch (per stage)")
 
@@ -229,6 +232,9 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
 
             continue
 
+        # =========================
+        # 🔥 USER FIX
+        # =========================
         if stripped.startswith("CMD") or stripped.startswith("ENTRYPOINT"):
 
             if not has_user:
