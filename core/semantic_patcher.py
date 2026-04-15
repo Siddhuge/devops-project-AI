@@ -45,9 +45,14 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
     # =========================
     # 🔥 ENTERPRISE CVE MATCHING (IMPROVED)
     # =========================
-    def has_relevant_critical_cve(image_issues, image_name):
+    def has_relevant_critical_cve(image_issues, image_name, all_issues=None):
         try:
             if not image_issues:
+                print(f"[FALLBACK] No direct CVEs for {image_name}, checking global issues")
+
+            if all_issues:
+                image_issues = all_issues
+            else:
                 return False
 
             image_name = image_name.lower()
@@ -63,7 +68,8 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
                 "openjdk": ["java", "jdk", "log4j"],
                 "ubuntu": os_packages,
                 "debian": os_packages,
-                "alpine": ["musl", "busybox"] + os_packages
+                "alpine": ["musl", "busybox"] + os_packages,
+                "os": ["dpkg", "apt", "libc", "libssl", "openssl"]
             }
 
             relevant_keywords = []
@@ -84,7 +90,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
                 if severity not in ["CRITICAL", "HIGH"]:
                     continue
 
-                if any(k in pkg for k in relevant_keywords):
+                if any(k in pkg for k in relevant_keywords) or "dpkg" in pkg:
                     print(f"[CVE MATCH] {pkg} is relevant to {image_name}")
                     return True
 
@@ -161,7 +167,7 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
 
                             if is_major_upgrade(tag, new_tag):
 
-                                if has_relevant_critical_cve(image_issues, name):
+                                if has_relevant_critical_cve(image_issues, name, issues):
                                     print(f"[AI OVERRIDE] Critical CVE matched → allowing upgrade: {image} → {recommended}")
                                     new_image = recommended
                                     changed = True
