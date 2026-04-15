@@ -50,10 +50,10 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
             if not image_issues:
                 print(f"[FALLBACK] No direct CVEs for {image_name}, checking global issues")
 
-            if all_issues:
-                image_issues = all_issues
-            else:
-                return False
+                if all_issues:
+                    image_issues = all_issues
+                else:
+                    return False
 
             image_name = image_name.lower()
 
@@ -90,9 +90,24 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
                 if severity not in ["CRITICAL", "HIGH"]:
                     continue
 
-                if any(k in pkg for k in relevant_keywords) or "dpkg" in pkg:
-                    print(f"[CVE MATCH] {pkg} is relevant to {image_name}")
-                    return True
+                            # 🔥 Only allow OS CVEs for OS images
+                if "ubuntu" in image_name or "debian" in image_name or "alpine" in image_name:
+                    if any(k in pkg for k in relevant_keywords) or "dpkg" in pkg:
+                        return True
+                else:
+                    # 🔥 STRICT language-specific filtering
+                    if "node" in image_name:
+                        if any(k in pkg for k in ["node", "npm", "lodash", "express"]):
+                            print(f"[CVE MATCH] {pkg} is relevant to node")
+                            return True
+
+                    elif "python" in image_name:
+                        if any(k in pkg for k in ["python", "pip", "django", "flask"]):
+                            return True
+
+                    elif "openjdk" in image_name:
+                        if any(k in pkg for k in ["java", "jdk", "log4j"]):
+                            return True
 
             return False
 
