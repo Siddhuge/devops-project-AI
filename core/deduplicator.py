@@ -17,16 +17,11 @@ def deduplicate(issues):
         # =========================
         cve = (issue.get("id") or issue.get("vulnerability_id") or "unknown").upper().strip()
         pkg = (issue.get("package") or "unknown").lower().strip()
+
+        # 🔥 FIXED: normalize BEFORE key
+        pkg = pkg.split(":")[-1]
+
         severity = (issue.get("severity") or "UNKNOWN").upper().strip()
-
-        target = (issue.get("target") or "unknown").lower().strip()
-
-        installed = (
-            issue.get("installed_version")
-            or issue.get("version")
-            or ""
-        ).strip()
-
         stage = issue.get("stage", "builder")
         priority = issue.get("priority", 0)
         confidence = issue.get("confidence", 0)
@@ -39,33 +34,32 @@ def deduplicate(issues):
         fixed_versions = set(fixed_versions)
 
         # =========================
-        # 🔥 IMPROVED KEY (LESS NOISE)
+        # 🔥 IMPROVED KEY
         # =========================
         key = (cve, pkg)
 
         # =========================
-        # 🔥 MERGE LOGIC (ENTERPRISE)
+        # 🔥 MERGE LOGIC
         # =========================
         if key in seen:
             existing = seen[key]
 
-            # 🔥 Merge fix versions
             existing_versions = set(existing.get("fixed_versions") or [])
             merged_versions = existing_versions.union(fixed_versions)
 
-            # 🔥 Prefer runtime issues
+            # 🔥 Prefer runtime
             if stage == "runtime" and existing.get("stage") != "runtime":
-                seen[key] = issue
                 issue["fixed_versions"] = sorted(merged_versions)
+                seen[key] = issue
                 continue
 
             # 🔥 Prefer higher priority
             if priority > existing.get("priority", 0):
-                seen[key] = issue
                 issue["fixed_versions"] = sorted(merged_versions)
+                seen[key] = issue
                 continue
 
-            # 🔥 Prefer higher severity (fallback)
+            # 🔥 Prefer higher severity
             existing_rank = severity_rank.get(existing.get("severity"), 0)
             current_rank = severity_rank.get(severity, 0)
 

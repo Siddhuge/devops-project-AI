@@ -66,9 +66,18 @@ def semantic_patch_dockerfile(content, issues=None, patch_log=None, dockerfile_p
             return any(x in package for x in ["spring", "log4j", "jackson", "netty"])
 
         # Tomcat
+        # 🔥 Tomcat (FIXED)
         if "tomcat" in image:
-            return any(x in package for x in ["tomcat", "servlet", "jsp"])
-
+            return any(x in package for x in [
+                "tomcat",
+                "spring",
+                "springframework",
+                "jackson",
+                "netty",
+                "servlet",
+                "jsp",
+                "logback"
+            ])
         # OS
         if any(x in image for x in ["ubuntu", "debian", "alpine"]):
             return any(x in package for x in ["glibc", "openssl", "bash", "apt"])
