@@ -2,9 +2,7 @@ import os
 import json
 from openai import AzureOpenAI
 
-# =========================
-# CLIENT SETUP
-# =========================
+
 client = AzureOpenAI(
     api_key=os.getenv("AZURE_OPENAI_KEY"),
     api_version="2024-02-15-preview",
@@ -12,9 +10,6 @@ client = AzureOpenAI(
 )
 
 
-# =========================
-# 🔥 DEPENDENCY FIX ENGINE (EXISTING - IMPROVED)
-# =========================
 def suggest_fix(issue, context=None):
     """
     AI decides best dependency fix version with reasoning
@@ -65,9 +60,7 @@ Return STRICT JSON ONLY:
         return None
 
 
-# =========================
-# 🔥 DOCKER FIX ENGINE (NEW)
-# =========================
+
 def suggest_docker_fix(base_image, issues=None):
     """
     AI suggests secure Docker base image upgrade
